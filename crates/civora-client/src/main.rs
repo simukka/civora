@@ -6,10 +6,20 @@ mod debug;
 mod hud;
 mod identity;
 mod interact;
+mod menu;
 mod net;
 mod player;
 mod render;
 mod sim_bridge;
+
+/// Top-level flow: the start screen, then the world. CLI lobby flags skip
+/// the menu entirely (scripted runs, muscle-memory hosts).
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AppState {
+    #[default]
+    Menu,
+    InGame,
+}
 
 fn main() {
     let args = match cli::parse() {
@@ -31,8 +41,10 @@ fn main() {
     };
     println!("player id {}", player_identity.player_id());
 
-    // Start networking before the window opens so the join address prints
-    // to a visible terminal. Offline (no flags) spawns no thread at all.
+    // With lobby flags, networking starts before the window opens so the
+    // join address prints to a visible terminal and the menu is skipped.
+    // Without flags the start screen decides, and the net thread (if any)
+    // spawns on selection.
     let joining = matches!(args.net, cli::NetMode::Join { .. });
     let net_handle = match &args.net {
         cli::NetMode::Offline => None,
@@ -50,6 +62,14 @@ fn main() {
             }))
         }
     };
+    let initial_state = if args.net == cli::NetMode::Offline {
+        AppState::Menu
+    } else {
+        AppState::InGame
+    };
+    // The world stays empty until either the host/offline path generates it
+    // or a join sync delivers it.
+    let start_empty = joining || initial_state == AppState::Menu;
 
     App::new()
         .add_plugins((
@@ -69,14 +89,14 @@ fn main() {
             next_seq: 0,
         })
         .insert_resource(identity::SessionLog::default())
+        .insert_state(initial_state)
         .add_plugins((
-            sim_bridge::SimBridgePlugin {
-                start_empty: joining,
-            },
+            sim_bridge::SimBridgePlugin { start_empty },
             net::NetPlugin {
                 handle: std::sync::Mutex::new(net_handle),
                 joining,
             },
+            menu::MenuPlugin,
             render::VoxelRenderPlugin,
             player::PlayerPlugin,
             interact::InteractPlugin,

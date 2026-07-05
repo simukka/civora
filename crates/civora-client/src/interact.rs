@@ -21,7 +21,8 @@ impl Plugin for InteractPlugin {
                 Update,
                 (select_slot, update_target, apply_clicks, update_highlight)
                     .chain()
-                    .before(crate::player::cursor_grab),
+                    .before(crate::player::cursor_grab)
+                    .run_if(in_state(crate::AppState::InGame)),
             );
     }
 }

@@ -24,8 +24,12 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player)
-            .add_systems(Update, (cursor_grab, mouse_look, movement).chain());
+        app.add_systems(Startup, spawn_player).add_systems(
+            Update,
+            (cursor_grab, mouse_look, movement)
+                .chain()
+                .run_if(in_state(crate::AppState::InGame)),
+        );
     }
 }
 

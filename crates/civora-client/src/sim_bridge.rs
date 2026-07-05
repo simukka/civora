@@ -45,6 +45,13 @@ impl Plugin for SimBridgePlugin {
 #[derive(Resource)]
 pub struct SimWorld(pub VoxelWorld);
 
+/// Generate the flat test world in place (the menu's host/offline path;
+/// plugin-time generation covers the CLI paths).
+pub fn generate_flat_world(world: &mut SimWorld, dirty: &mut DirtyChunks) {
+    world.0 = VoxelWorld::flat(WORLD_RADIUS_CHUNKS);
+    dirty.0.extend(world.0.chunk_positions());
+}
+
 /// Player intents waiting for the next simulation tick.
 #[derive(Resource, Default)]
 pub struct ActionQueue(pub Vec<Action>);

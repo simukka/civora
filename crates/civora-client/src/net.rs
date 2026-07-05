@@ -33,35 +33,60 @@ pub struct NetPlugin {
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PeerRoster>()
-            .init_resource::<RemoteActionQueue>();
+            .init_resource::<RemoteActionQueue>()
+            // Systems are always registered but inert until a session
+            // installs NetChannels — at boot (CLI flags) or from the menu.
+            .add_systems(
+                FixedUpdate,
+                (
+                    (pump_net_events, apply_remote_actions)
+                        .chain()
+                        .before(drain_action_queue),
+                    publish_beacon.after(drain_action_queue),
+                )
+                    .run_if(resource_exists::<NetChannels>),
+            );
 
-        let Some(handle) = self.handle.lock().unwrap().take() else {
-            app.insert_resource(NetStatus::offline());
-            return; // single player: no channels, no systems, no behavior change
-        };
-
-        app.insert_resource(NetStatus {
-            phase: if self.joining {
-                NetPhase::Joining
-            } else {
-                NetPhase::Host
-            },
-            ..NetStatus::offline()
-        })
-        .insert_resource(NetChannels {
-            commands: handle.commands,
-            events: Mutex::new(handle.events),
-        })
-        .add_systems(
-            FixedUpdate,
-            (
-                (pump_net_events, apply_remote_actions)
-                    .chain()
-                    .before(drain_action_queue),
-                publish_beacon.after(drain_action_queue),
-            ),
-        );
+        match self.handle.lock().unwrap().take() {
+            Some(handle) => {
+                app.insert_resource(NetStatus {
+                    phase: if self.joining {
+                        NetPhase::Joining
+                    } else {
+                        NetPhase::Host
+                    },
+                    ..NetStatus::offline()
+                })
+                .insert_resource(NetChannels::new(handle));
+            }
+            None => {
+                app.insert_resource(NetStatus::offline());
+            }
+        }
     }
+}
+
+/// Start a session chosen from the start screen: spawn the network thread
+/// and install its channels so the (already registered) net systems engage.
+pub fn start_session(
+    commands: &mut Commands,
+    status: &mut NetStatus,
+    seed: [u8; 32],
+    mode: civora_net::SessionMode,
+) {
+    let joining = matches!(mode, civora_net::SessionMode::Join { .. });
+    let handle = civora_net::spawn(civora_net::NetConfig {
+        seed,
+        mode,
+        cell: civora_net::wire::CellRef::genesis(),
+        enable_mdns: true,
+    });
+    commands.insert_resource(NetChannels::new(handle));
+    status.phase = if joining {
+        NetPhase::Joining
+    } else {
+        NetPhase::Host
+    };
 }
 
 /// Channels to the network thread. The event receiver is `Send + !Sync`,
@@ -70,6 +95,15 @@ impl Plugin for NetPlugin {
 pub struct NetChannels {
     pub commands: civora_net::CommandSender,
     events: Mutex<std::sync::mpsc::Receiver<NetEvent>>,
+}
+
+impl NetChannels {
+    pub fn new(handle: NetHandle) -> Self {
+        Self {
+            commands: handle.commands,
+            events: Mutex::new(handle.events),
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

@@ -14,8 +14,13 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_hotbar_selection, update_debug_text));
+        // The HUD belongs to the world, not the start screen.
+        app.add_systems(OnEnter(crate::AppState::InGame), spawn_hud)
+            .add_systems(
+                Update,
+                (update_hotbar_selection, update_debug_text)
+                    .run_if(in_state(crate::AppState::InGame)),
+            );
     }
 }
 
@@ -25,7 +30,7 @@ struct HotbarSlotUi(usize);
 #[derive(Component)]
 struct DebugText;
 
-fn spawn_hud(mut commands: Commands) {
+fn spawn_hud(mut commands: Commands, slot: Res<SelectedSlot>) {
     // Crosshair: two thin bars centered on screen.
     for (width, height) in [(12.0, 2.0), (2.0, 12.0)] {
         commands.spawn((
@@ -59,6 +64,14 @@ fn spawn_hud(mut commands: Commands) {
         .with_children(|parent| {
             for (i, block) in BlockId::PLACEABLE.into_iter().enumerate() {
                 let [r, g, b] = block_color(block);
+                // The HUD can spawn mid-session (after the start screen),
+                // so the current selection is applied here, not only by the
+                // change-detection system.
+                let border = if i == slot.0 {
+                    Color::WHITE
+                } else {
+                    Color::srgba(0.0, 0.0, 0.0, 0.6)
+                };
                 parent.spawn((
                     HotbarSlotUi(i),
                     Node {
@@ -68,7 +81,7 @@ fn spawn_hud(mut commands: Commands) {
                         ..default()
                     },
                     BackgroundColor(Color::srgb(r, g, b)),
-                    BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                    BorderColor::all(border),
                 ));
             }
         });
