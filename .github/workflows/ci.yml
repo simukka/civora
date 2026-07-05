@@ -74,8 +74,13 @@ jobs:
               ca-certificates
           else
             apt-get update
+            # build-essential (not bare gcc) is required: it hard-depends on
+            # libc6-dev, which provides the C runtime objects (Scrt1.o, crti.o,
+            # crtn.o) and libc/libm/libpthread linker stubs. Bare `gcc` only
+            # *recommends* libc6-dev, so it is skipped under --no-install-recommends
+            # and linking fails with "cannot open Scrt1.o".
             apt-get install -y --no-install-recommends \
-              curl pkg-config gcc \
+              curl pkg-config build-essential \
               libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev \
               ca-certificates
           fi
