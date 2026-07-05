@@ -116,6 +116,8 @@ fn update_debug_text(
     slot: Res<SelectedSlot>,
     local: Res<crate::identity::LocalIdentity>,
     log: Res<crate::identity::SessionLog>,
+    net: Res<crate::net::NetStatus>,
+    roster: Res<crate::net::PeerRoster>,
     mut text: Single<&mut Text, With<DebugText>>,
 ) {
     let (player, transform) = *player;
@@ -146,5 +148,25 @@ fn update_debug_text(
     );
     let _ = writeln!(text, "target {targeted}");
     let _ = writeln!(text, "hand {}", slot.block().name());
+
+    use crate::net::NetPhase;
+    let phase = match net.phase {
+        NetPhase::Offline => "offline",
+        NetPhase::Host => "host",
+        NetPhase::Joining => "joining...",
+        NetPhase::Live => "live",
+    };
+    // ASCII only: the default font has no em-dash glyph.
+    let _ = writeln!(text, "net {phase}, {} peer(s)", roster.0.len());
+    for (player, addr) in &roster.0 {
+        let _ = writeln!(text, "  peer {} {}", player.short(), addr);
+    }
+    if net.diverged {
+        let _ = writeln!(text, "DIVERGED - resyncing");
+    }
+    if let Some(err) = &net.last_error {
+        let _ = writeln!(text, "net error: {err}");
+    }
+
     let _ = writeln!(text, "click to grab cursor, Esc to release");
 }

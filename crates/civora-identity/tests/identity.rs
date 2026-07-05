@@ -1,5 +1,5 @@
 use civora_identity::{
-    ActionLog, Identity, KeyfileError, VerifyError, load_encrypted, save_encrypted,
+    ActionLog, Identity, KeyfileError, SignedAction, VerifyError, load_encrypted, save_encrypted,
 };
 use civora_sim::{Action, BlockId, VoxelWorld, tick};
 
@@ -113,6 +113,101 @@ fn verified_replay_reproduces_content_hash() {
 
     assert_eq!(direct.content_hash(), replayed.content_hash());
     assert!(!dirty.is_empty());
+}
+
+#[test]
+fn signed_action_encode_decode_round_trip() {
+    for action in [
+        place([1, 4, -1], BlockId::PLANK),
+        Action::BreakBlock { pos: [-5, 3, 7] },
+    ] {
+        let signed = identity().sign(action, 42);
+        let mut bytes = Vec::new();
+        signed.encode(&mut bytes);
+
+        let decoded = SignedAction::decode_exact(&bytes).expect("round-trips");
+        assert_eq!(decoded, signed);
+        decoded.verify().expect("decoded action still verifies");
+    }
+}
+
+#[test]
+fn signed_action_decode_rejects_malformed_input() {
+    let signed = identity().sign(place([1, 4, 1], BlockId::PLANK), 3);
+    let mut bytes = Vec::new();
+    signed.encode(&mut bytes);
+
+    // Truncation at every length is rejected.
+    for len in 0..bytes.len() {
+        assert_eq!(SignedAction::decode_exact(&bytes[..len]), None);
+    }
+    // Trailing bytes are rejected by decode_exact but exposed by decode.
+    let mut trailing = bytes.clone();
+    trailing.push(0xff);
+    assert_eq!(SignedAction::decode_exact(&trailing), None);
+    let (decoded, rest) = SignedAction::decode(&trailing).expect("list-style decode");
+    assert_eq!(decoded, signed);
+    assert_eq!(rest, [0xff]);
+
+    // A corrupted inner action tag fails structural decoding.
+    let mut bad_action = bytes.clone();
+    bad_action[42] = 0xee; // action tag byte (after author 32 + seq 8 + len 2)
+    assert_eq!(SignedAction::decode_exact(&bad_action), None);
+
+    // A flipped signature byte still decodes but fails verification.
+    let mut bad_sig = bytes.clone();
+    let last = bad_sig.len() - 1;
+    bad_sig[last] ^= 0x01;
+    let decoded = SignedAction::decode_exact(&bad_sig).expect("structurally valid");
+    assert_eq!(decoded.verify(), Err(VerifyError::BadSignature));
+}
+
+#[test]
+fn signed_actions_decode_by_iteration() {
+    let id = identity();
+    let script = [
+        place([1, 4, 1], BlockId::PLANK),
+        Action::BreakBlock { pos: [1, 3, 1] },
+        place([2, 4, 2], BlockId::GLASS),
+    ];
+    let mut bytes = Vec::new();
+    for (seq, action) in script.into_iter().enumerate() {
+        id.sign(action, seq as u64).encode(&mut bytes);
+    }
+
+    let mut rest = bytes.as_slice();
+    let mut decoded = Vec::new();
+    while !rest.is_empty() {
+        let (signed, tail) = SignedAction::decode(rest).expect("list entry decodes");
+        decoded.push(signed);
+        rest = tail;
+    }
+    assert_eq!(decoded.len(), 3);
+    assert_eq!(decoded[2].seq, 2);
+}
+
+#[test]
+fn log_exposes_last_seq_and_seq_vector() {
+    let a = identity();
+    let b = Identity::from_seed([9; 32]);
+    let mut log = ActionLog::new();
+    assert_eq!(log.last_seq(a.player_id()), None);
+    assert!(log.seq_vector().is_empty());
+
+    log.append(a.sign(place([1, 4, 1], BlockId::PLANK), 0))
+        .unwrap();
+    log.append(a.sign(place([1, 5, 1], BlockId::PLANK), 7))
+        .unwrap();
+    log.append(b.sign(place([2, 4, 2], BlockId::STONE), 2))
+        .unwrap();
+
+    assert_eq!(log.last_seq(a.player_id()), Some(7));
+    assert_eq!(log.last_seq(b.player_id()), Some(2));
+
+    let vector = log.seq_vector();
+    assert_eq!(vector.len(), 2);
+    // Sorted by author bytes, regardless of append order.
+    assert!(vector[0].0.0 < vector[1].0.0);
 }
 
 #[test]

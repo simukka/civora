@@ -1,5 +1,5 @@
 use civora_sim::chunk::world_to_local;
-use civora_sim::{Action, BlockId, CHUNK_SIZE, ChunkPos, VoxelWorld, raycast, tick};
+use civora_sim::{Action, BlockId, CHUNK_SIZE, Chunk, ChunkPos, VoxelWorld, raycast, tick};
 
 #[test]
 fn coord_math_handles_negative_positions() {
@@ -205,6 +205,54 @@ fn raycast_from_inside_solid_reports_zero_normal() {
     assert_eq!(hit.pos, [0, 0, 0]);
     assert_eq!(hit.normal, [0, 0, 0]);
     assert_eq!(hit.distance, 0.0);
+}
+
+#[test]
+fn chunk_block_bytes_round_trips() {
+    let mut chunk = Chunk::empty();
+    chunk.set([0, 0, 0], BlockId::STONE);
+    chunk.set([31, 31, 31], BlockId::GLASS);
+    chunk.set([5, 17, 9], BlockId::PLANK);
+
+    let bytes: Vec<u8> = chunk.block_bytes().collect();
+    let rebuilt = Chunk::from_block_bytes(&bytes).expect("round-trips");
+    assert_eq!(rebuilt.get([0, 0, 0]), BlockId::STONE);
+    assert_eq!(rebuilt.get([31, 31, 31]), BlockId::GLASS);
+    assert_eq!(rebuilt.get([5, 17, 9]), BlockId::PLANK);
+    assert!(!rebuilt.is_empty());
+    assert_eq!(
+        rebuilt.block_bytes().collect::<Vec<u8>>(),
+        bytes,
+        "re-encoding reproduces the same canonical bytes"
+    );
+
+    // Wrong lengths are rejected.
+    assert!(Chunk::from_block_bytes(&bytes[..bytes.len() - 1]).is_none());
+    assert!(Chunk::from_block_bytes(&[]).is_none());
+}
+
+/// Installing transferred chunks reproduces the same content hash as
+/// building the world block-by-block — the property snapshot sync relies on.
+#[test]
+fn installed_snapshot_chunks_match_content_hash() {
+    let mut original = VoxelWorld::flat(1);
+    tick::step(
+        &mut original,
+        &[
+            Action::PlaceBlock {
+                pos: [1, 4, 1],
+                block: BlockId::PLANK,
+            },
+            Action::BreakBlock { pos: [-2, 3, 5] },
+        ],
+    );
+
+    let mut synced = VoxelWorld::new();
+    for pos in original.chunk_positions() {
+        let bytes: Vec<u8> = original.chunk(pos).unwrap().block_bytes().collect();
+        synced.insert_chunk(pos, Chunk::from_block_bytes(&bytes).unwrap());
+    }
+    assert_eq!(synced.content_hash(), original.content_hash());
 }
 
 /// `CHUNK_SIZE` is a protocol-level constant, not a local tuning knob.

@@ -73,7 +73,7 @@ pub fn save_encrypted(
 
     let key = derive_key(passphrase, &salt)?;
     let ciphertext = XChaCha20Poly1305::new(Key::from_slice(&key))
-        .encrypt(XNonce::from_slice(&nonce), identity.seed().as_slice())
+        .encrypt(XNonce::from_slice(&nonce), identity.seed_bytes().as_slice())
         .map_err(|_| KeyfileError::Kdf)?;
 
     let mut bytes = Vec::with_capacity(FILE_LEN);

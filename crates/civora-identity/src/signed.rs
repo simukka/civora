@@ -31,6 +31,60 @@ pub(crate) fn signing_payload(author: &PlayerId, seq: u64, action: &Action) -> V
 }
 
 impl SignedAction {
+    /// Append the canonical wire encoding of this signed action to `out`:
+    /// `author (32) || seq (u64 LE) || action_len (u16 LE) || action bytes ||
+    /// signature (64)`.
+    ///
+    /// The length prefix makes the encoding self-delimiting so lists of
+    /// signed actions (gossip messages, transferred logs) decode by
+    /// iteration.
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.author.0);
+        out.extend_from_slice(&self.seq.to_le_bytes());
+        let mut action = Vec::with_capacity(14);
+        self.action.encode(&mut action);
+        out.extend_from_slice(&(action.len() as u16).to_le_bytes());
+        out.extend_from_slice(&action);
+        out.extend_from_slice(&self.signature);
+    }
+
+    /// Decode one signed action from the front of `bytes`, returning it and
+    /// the remaining bytes.
+    ///
+    /// Returns `None` for truncated input or an inner action that
+    /// [`Action::decode`] rejects. Decoding checks structure only — call
+    /// [`SignedAction::verify`] (or append to [`crate::ActionLog`]) before
+    /// trusting the result.
+    pub fn decode(bytes: &[u8]) -> Option<(SignedAction, &[u8])> {
+        fn take(bytes: &[u8], n: usize) -> Option<(&[u8], &[u8])> {
+            (bytes.len() >= n).then(|| bytes.split_at(n))
+        }
+
+        let (author, rest) = take(bytes, 32)?;
+        let (seq, rest) = take(rest, 8)?;
+        let (len, rest) = take(rest, 2)?;
+        let action_len = u16::from_le_bytes(len.try_into().unwrap()) as usize;
+        let (action, rest) = take(rest, action_len)?;
+        let (signature, rest) = take(rest, 64)?;
+        Some((
+            SignedAction {
+                author: PlayerId(author.try_into().unwrap()),
+                seq: u64::from_le_bytes(seq.try_into().unwrap()),
+                action: Action::decode(action)?,
+                signature: signature.try_into().unwrap(),
+            },
+            rest,
+        ))
+    }
+
+    /// Decode exactly one signed action, rejecting trailing bytes.
+    pub fn decode_exact(bytes: &[u8]) -> Option<SignedAction> {
+        match Self::decode(bytes)? {
+            (signed, []) => Some(signed),
+            _ => None,
+        }
+    }
+
     /// Check the signature against the author's key.
     ///
     /// This is the Reality Kernel gate: an action may reach the world only

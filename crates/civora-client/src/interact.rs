@@ -112,11 +112,12 @@ fn apply_clicks(
     target: Res<TargetedBlock>,
     slot: Res<SelectedSlot>,
     player: Single<&Transform, With<Player>>,
+    net: Res<crate::net::NetStatus>,
     mut queue: ResMut<ActionQueue>,
 ) {
     // This runs before the grab system, so the click that captures the
     // cursor never also edits the world.
-    if !cursor_grabbed(&cursor_options) {
+    if !cursor_grabbed(&cursor_options) || net.gate_input() {
         return;
     }
     let Some(hit) = target.0 else {

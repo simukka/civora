@@ -49,7 +49,12 @@ impl Identity {
         }
     }
 
-    pub(crate) fn seed(&self) -> [u8; 32] {
+    /// The 32-byte secret seed of this keypair.
+    ///
+    /// Secret material: exists so the client can derive its libp2p transport
+    /// keypair from the same key (PeerId == PlayerId). Never log, display,
+    /// or transmit these bytes.
+    pub fn seed_bytes(&self) -> [u8; 32] {
         self.signing.to_bytes()
     }
 

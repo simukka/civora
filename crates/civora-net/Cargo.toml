@@ -1,0 +1,31 @@
+[package]
+name = "civora-net"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+civora-sim = { path = "../civora-sim" }
+civora-identity = { path = "../civora-identity" }
+# TCP + Noise + Yamux keeps the dependency tree smaller than QUIC (no
+# quinn); QUIC can be added later as a second transport without protocol
+# changes. Ed25519 keys let PeerId reuse the player identity key.
+libp2p = { version = "0.56", features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "gossipsub",
+    "mdns",
+    "request-response",
+    "macros",
+    "ed25519",
+] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+futures = "0.3"
+# Required to implement libp2p's request_response::Codec trait.
+async-trait = "0.1"
+# libp2p logs through tracing; the client decides whether to subscribe.
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

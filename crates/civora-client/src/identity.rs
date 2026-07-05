@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use civora_identity::{ActionLog, Identity, KeyfileError, load_encrypted, save_encrypted};
 
 const PASSPHRASE_ENV: &str = "CIVORA_PASSPHRASE";
+const KEY_FILE_ENV: &str = "CIVORA_KEY_FILE";
 const MAX_ATTEMPTS: u32 = 3;
 
 /// The local player's keypair and the next action sequence number.
@@ -25,8 +26,12 @@ pub struct LocalIdentity {
 pub struct SessionLog(pub ActionLog);
 
 /// Load the identity key file, or create it on first run.
-pub fn load_or_create() -> Result<Identity, String> {
-    let path = key_path()?;
+///
+/// `key_file` (the `--key-file` flag) overrides the default location, as
+/// does `CIVORA_KEY_FILE`; two client instances on one machine must use
+/// distinct identities or the per-author sequence numbers collide.
+pub fn load_or_create(key_file: Option<PathBuf>) -> Result<Identity, String> {
+    let path = key_path(key_file)?;
     let env_pass = std::env::var(PASSPHRASE_ENV).ok();
     if path.exists() {
         unlock(&path, env_pass)
@@ -35,7 +40,10 @@ pub fn load_or_create() -> Result<Identity, String> {
     }
 }
 
-fn key_path() -> Result<PathBuf, String> {
+fn key_path(overridden: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(path) = overridden.or_else(|| std::env::var_os(KEY_FILE_ENV).map(PathBuf::from)) {
+        return Ok(path);
+    }
     dirs::config_dir()
         .map(|dir| dir.join("civora").join("identity.key"))
         .ok_or_else(|| "no OS config directory found for the identity key".into())

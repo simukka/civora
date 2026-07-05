@@ -45,6 +45,27 @@ impl ActionLog {
         &self.entries
     }
 
+    /// The last accepted sequence number for `author`, if any.
+    ///
+    /// A joining peer rebuilds its log from a transferred snapshot and uses
+    /// this to resume its own numbering (`last_seq(me) + 1`) and to build
+    /// state beacons for divergence detection.
+    pub fn last_seq(&self, author: PlayerId) -> Option<u64> {
+        self.last_seq.get(&author).copied()
+    }
+
+    /// All `(author, last accepted seq)` pairs, sorted by author bytes —
+    /// the canonical order state beacons are encoded in.
+    pub fn seq_vector(&self) -> Vec<(PlayerId, u64)> {
+        let mut seqs: Vec<(PlayerId, u64)> = self
+            .last_seq
+            .iter()
+            .map(|(author, &seq)| (*author, seq))
+            .collect();
+        seqs.sort_by_key(|(author, _)| author.0);
+        seqs
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

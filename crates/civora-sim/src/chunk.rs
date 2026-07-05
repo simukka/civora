@@ -105,4 +105,26 @@ impl Chunk {
     pub fn block_bytes(&self) -> impl Iterator<Item = u8> + '_ {
         self.blocks.iter().map(|b| b.0)
     }
+
+    /// Rebuild a chunk from bytes in [`Chunk::block_bytes`] order.
+    ///
+    /// The canonical inverse of `block_bytes`, used to install world
+    /// snapshots received from peers. Returns `None` unless `bytes` is
+    /// exactly one chunk volume long.
+    pub fn from_block_bytes(bytes: &[u8]) -> Option<Chunk> {
+        if bytes.len() != VOLUME {
+            return None;
+        }
+        let mut chunk = Chunk::empty();
+        let mut solid_count = 0u32;
+        for (slot, &b) in chunk.blocks.iter_mut().zip(bytes) {
+            let block = BlockId(b);
+            if block.is_solid() {
+                solid_count += 1;
+            }
+            *slot = block;
+        }
+        chunk.solid_count = solid_count;
+        Some(chunk)
+    }
 }

@@ -63,6 +63,14 @@ impl VoxelWorld {
         Some(chunk_pos)
     }
 
+    /// Install a whole chunk, replacing any existing one at `pos`.
+    ///
+    /// Used when applying a world snapshot received from a peer; live edits
+    /// still go through [`VoxelWorld::set_block`] via actions.
+    pub fn insert_chunk(&mut self, pos: ChunkPos, chunk: Chunk) {
+        self.chunks.insert(pos, chunk);
+    }
+
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
         self.chunks.get(&pos)
     }

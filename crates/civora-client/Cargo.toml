@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 civora-sim = { path = "../civora-sim" }
 civora-identity = { path = "../civora-identity" }
+civora-net = { path = "../civora-net" }
 # Identity key file location + terminal passphrase prompt.
 dirs = "6"
 rpassword = "7"

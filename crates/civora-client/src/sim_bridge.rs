@@ -9,18 +9,28 @@
 
 use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
+use civora_net::NetCommand;
 use civora_sim::{Action, ChunkPos, VoxelWorld, tick};
 
 use crate::identity::{LocalIdentity, SessionLog};
+use crate::net::{NetChannels, NetStatus};
 
 /// How many chunks of flat test world to generate around the origin.
 const WORLD_RADIUS_CHUNKS: i32 = 3;
 
-pub struct SimBridgePlugin;
+pub struct SimBridgePlugin {
+    /// Joiners start empty and receive the real world via sync; hosts and
+    /// single players generate the flat test world.
+    pub start_empty: bool,
+}
 
 impl Plugin for SimBridgePlugin {
     fn build(&self, app: &mut App) {
-        let world = VoxelWorld::flat(WORLD_RADIUS_CHUNKS);
+        let world = if self.start_empty {
+            VoxelWorld::new()
+        } else {
+            VoxelWorld::flat(WORLD_RADIUS_CHUNKS)
+        };
         // Everything starts dirty so the renderer meshes the initial world.
         let dirty: HashSet<ChunkPos> = world.chunk_positions().collect();
 
@@ -43,14 +53,22 @@ pub struct ActionQueue(pub Vec<Action>);
 #[derive(Resource, Default)]
 pub struct DirtyChunks(pub HashSet<ChunkPos>);
 
-fn drain_action_queue(
+pub(crate) fn drain_action_queue(
     mut world: ResMut<SimWorld>,
     mut queue: ResMut<ActionQueue>,
     mut dirty: ResMut<DirtyChunks>,
     mut local: ResMut<LocalIdentity>,
     mut log: ResMut<SessionLog>,
+    status: Res<NetStatus>,
+    channels: Option<Res<NetChannels>>,
 ) {
     if queue.0.is_empty() {
+        return;
+    }
+    // While joining there is no world to act on yet; the queue is also
+    // emptied so pre-sync clicks don't fire into the synced world.
+    if status.gate_input() {
+        queue.0.clear();
         return;
     }
     let mut verified = Vec::with_capacity(queue.0.len());
@@ -62,6 +80,10 @@ fn drain_action_queue(
             Ok(()) => {
                 local.next_seq += 1;
                 verified.push(action);
+                // Gossip what passed the gate; peers re-verify on their end.
+                if let Some(channels) = &channels {
+                    let _ = channels.commands.send(NetCommand::PublishAction(signed));
+                }
             }
             Err(err) => warn!("rejected action: {err}"),
         }
