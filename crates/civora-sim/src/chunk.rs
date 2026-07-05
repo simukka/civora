@@ -14,6 +14,9 @@ pub const CHUNK_SIZE: i32 = 32;
 const SIZE: usize = CHUNK_SIZE as usize;
 const VOLUME: usize = SIZE * SIZE * SIZE;
 
+// compile time check
+const _: () = assert!(CHUNK_SIZE == 32);
+
 /// Position of a chunk in chunk coordinates (world position / CHUNK_SIZE).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct ChunkPos {
