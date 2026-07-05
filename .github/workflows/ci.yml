@@ -49,6 +49,10 @@ jobs:
           - name: linux
             os: ubuntu-latest
             binary: civora-client
+          - name: linux-debian
+            os: ubuntu-latest
+            container: debian:bookworm
+            binary: civora-client
           - name: windows
             os: windows-latest
             binary: civora-client.exe
@@ -56,15 +60,27 @@ jobs:
             os: macos-latest
             binary: civora-client
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+          else
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              curl pkg-config gcc \
+              libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+          fi
+
+      - name: Verify GLIBC version
+        if: matrix.name == 'linux-debian'
+        run: ldd --version
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -98,10 +114,15 @@ jobs:
           version="${GITHUB_REF_NAME}"
           mkdir -p dist
 
-          # Linux (tar.gz)
+          # Linux / ubuntu-latest (tar.gz)
           chmod +x artifacts/civora-client-linux/civora-client
           tar -czf "dist/civora-client-${version}-linux-x86_64.tar.gz" \
             -C artifacts/civora-client-linux civora-client
+
+          # Linux / Debian Bookworm – GLIBC 2.36 (tar.gz)
+          chmod +x artifacts/civora-client-linux-debian/civora-client
+          tar -czf "dist/civora-client-${version}-linux-debian-x86_64.tar.gz" \
+            -C artifacts/civora-client-linux-debian civora-client
 
           # macOS (tar.gz)
           chmod +x artifacts/civora-client-macos/civora-client
