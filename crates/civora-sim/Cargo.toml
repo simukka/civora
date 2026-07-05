@@ -1,0 +1,6 @@
+[package]
+name = "civora-sim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

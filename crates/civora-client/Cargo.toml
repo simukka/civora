@@ -1,0 +1,30 @@
+[package]
+name = "civora-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+civora-sim = { path = "../civora-sim" }
+# Expansion of Bevy's "3d" + "ui" + "audio" umbrella features, minus
+# "bevy_gilrs" (gamepads) which needs the libudev system package on Linux.
+# Linux builds need libasound2-dev (ALSA) for audio.
+bevy = { version = "0.19", default-features = false, features = [
+    "default_app",
+    "std",
+    "bevy_winit",
+    "default_font",
+    "multi_threaded",
+    "x11",
+    "wayland",
+    "custom_cursor",
+    "sysinfo_plugin",
+    "3d_bevy_render",
+    "scene",
+    "picking",
+    "ui_api",
+    "ui_bevy_render",
+    "bevy_ui_widgets",
+    "png",
+    "bevy_audio",
+    "vorbis",
+] }
