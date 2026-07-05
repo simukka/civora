@@ -1,0 +1,83 @@
+version = 1
+
+# Civora is multi-licensed. This file declares, machine-readably, which license
+# applies to which part of the tree, following the REUSE specification
+# (https://reuse.software). The authoritative human-readable map is COPYRIGHT.md.
+#
+# Where multiple [[annotations]] match the same file, the LAST matching entry
+# wins, so more specific rules are placed after the more general ones.
+
+# --- Core software: AGPL-3.0-or-later -----------------------------------------
+[[annotations]]
+path = "crates/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# --- SDK: Apache-2.0 ----------------------------------------------------------
+[[annotations]]
+path = "sdk/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "Apache-2.0"
+
+# --- Genesis Realm: code is AGPL, assets are CC-BY-SA-4.0 ---------------------
+[[annotations]]
+path = "realms/genesis-realm/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = "realms/genesis-realm/assets/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+# --- Realm templates: Apache-2.0 OR CC-BY-4.0 --------------------------------
+[[annotations]]
+path = "realms/templates/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "Apache-2.0 OR CC-BY-4.0"
+
+# --- Assets -------------------------------------------------------------------
+[[annotations]]
+path = "assets/official/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+[[annotations]]
+path = "assets/logo/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "LicenseRef-Civora-Trademark"
+
+# --- Documentation and prose: CC-BY-SA-4.0 -----------------------------------
+[[annotations]]
+path = ["*.md", "plans/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+# --- Root brand images: trademark --------------------------------------------
+[[annotations]]
+path = ["civora_logo.svg", "logo_concept.png"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "LicenseRef-Civora-Trademark"
+
+# --- Root concept art & screenshots: CC-BY-SA-4.0 ----------------------------
+[[annotations]]
+path = ["concept*.png", "civora-screenshot-*.png"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+# --- Build & project tooling: AGPL-3.0-or-later ------------------------------
+[[annotations]]
+path = ["Cargo.toml", "Cargo.lock", ".gitignore", ".github/**", "REUSE.toml", "LICENSE", "NOTICE"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Civora Authors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"

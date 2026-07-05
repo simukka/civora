@@ -10,6 +10,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# Core Civora crates are copyleft; see COPYRIGHT.md for the repository-wide map.
+license = "AGPL-3.0-or-later"
 
 # Keep debug builds playable: optimize dependencies (Bevy) even in dev.
 [profile.dev]

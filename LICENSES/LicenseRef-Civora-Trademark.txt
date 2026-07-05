@@ -1,0 +1,42 @@
+Civora Trademark and Brand License
+==================================
+
+SPDX identifier: LicenseRef-Civora-Trademark
+
+Copyright (c) 2026 The Civora Authors. All rights reserved.
+
+This license applies ONLY to Civora brand assets, including but not limited to
+the "Civora" name and wordmark, official realm and component names used as
+brands (such as "Genesis Realm" and "Reality Kernel"), and the Civora logo
+files (for example civora_logo.svg, logo_concept.png, and any file under
+assets/logo/).
+
+These brand assets are NOT covered by the free software or open content
+licenses used elsewhere in this repository (AGPL-3.0-or-later, Apache-2.0,
+CC-BY-SA-4.0, or CC-BY-4.0). They are trademark-protected and are NOT freely
+relicensed. No trademark rights are granted by any other license in this
+repository.
+
+You MAY, without asking:
+  - Use the Civora name nominatively to refer to this project truthfully, for
+    example "compatible with Civora", "based on Civora", or "a fork of Civora".
+  - Redistribute the official, unmodified logo files together with unmodified
+    copies of official Civora software or documentation.
+  - Use the marks for discussion, education, journalism, and commentary.
+
+You MAY NOT, without prior written permission from the Civora Authors:
+  - Use the Civora name or logo in a way that implies official endorsement,
+    affiliation, or sponsorship.
+  - Modify, recolor, or create derivative versions of the logo and continue to
+    call it the Civora logo.
+  - Use the Civora name or logo as the primary branding for a fork, product,
+    service, network, or company in a way likely to cause confusion about
+    origin.
+
+If you distribute a modified version of Civora, you must comply with the
+applicable software license (for the core, AGPL-3.0-or-later) AND remove or
+replace the Civora brand assets unless you have permission to keep them, so
+that users are not misled about the source of the software.
+
+See TRADEMARK.md for the full brand and trademark policy. This notice is a
+summary, not legal advice.

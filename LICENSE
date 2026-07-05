@@ -1,0 +1,59 @@
+Civora — Licensing Overview
+===========================
+
+Civora is a multi-licensed project. Different parts of this repository are
+released under different licenses so that the shared universe stays open and
+player-governed, tools and modules stay easy to build, creative assets stay
+free to share, and the Civora name and logo stay protected.
+
+This file is a human-readable summary. The authoritative, path-by-path mapping
+is in COPYRIGHT.md, and the full, verbatim license texts are in the LICENSES/
+directory. Machine-readable licensing is declared in REUSE.toml following the
+REUSE specification (https://reuse.software).
+
+Primary license
+---------------
+The Civora client, the Reality Kernel, and the core protocol crates — the
+software you run and distribute — are licensed under the GNU Affero General
+Public License, version 3 or (at your option) any later version.
+
+    SPDX-License-Identifier: AGPL-3.0-or-later
+    Full text: LICENSES/AGPL-3.0-or-later.txt
+
+Because Civora is peer-to-peer and network-served, the AGPL is used
+deliberately: anyone who runs a modified Civora node for other players must
+offer those users the corresponding source. This keeps the universe forkable
+and auditable.
+
+Other components
+----------------
+  - SDK (sdk/**): Apache License 2.0 — permissive, so anyone can build modules,
+    tools, and integrations without copyleft obligations.
+        SPDX-License-Identifier: Apache-2.0
+        Full text: LICENSES/Apache-2.0.txt
+
+  - Official assets (assets/official/**) and Genesis Realm assets
+    (realms/genesis-realm/assets/**): Creative Commons Attribution-ShareAlike
+    4.0 International.
+        SPDX-License-Identifier: CC-BY-SA-4.0
+        Full text: LICENSES/CC-BY-SA-4.0.txt
+
+  - Realm templates (realms/templates/**): your choice of Apache License 2.0
+    OR Creative Commons Attribution 4.0 International — maximally reusable
+    starting points for code and content.
+        SPDX-License-Identifier: Apache-2.0 OR CC-BY-4.0
+        Full texts: LICENSES/Apache-2.0.txt, LICENSES/CC-BY-4.0.txt
+
+  - Civora name and logo (assets/logo/**, civora_logo.svg, logo_concept.png):
+    trademark-protected. NOT covered by the licenses above and not freely
+    relicensed.
+        SPDX-License-Identifier: LicenseRef-Civora-Trademark
+        See: TRADEMARK.md, LICENSES/LicenseRef-Civora-Trademark.txt
+
+Contributions
+-------------
+Unless stated otherwise, contributions are made under the license that already
+applies to the file or directory you are changing (inbound = outbound). See
+CONTRIBUTING.md.
+
+Copyright (c) 2026 The Civora Authors.

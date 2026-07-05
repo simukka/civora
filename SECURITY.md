@@ -1,4 +1,4 @@
-Security rules we need from day one
+Security rules from day one.
 
 These are non-negotiable.
 

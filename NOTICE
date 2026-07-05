@@ -1,0 +1,38 @@
+Civora
+Copyright (c) 2026 The Civora Authors.
+
+This product is multi-licensed. See COPYRIGHT.md for the authoritative,
+path-by-path license mapping and LICENSES/ for the full license texts.
+
+Summary:
+  - Core software (crates/**, realm code): AGPL-3.0-or-later
+  - SDK (sdk/**): Apache-2.0
+  - Official and realm assets: CC-BY-SA-4.0
+  - Realm templates: Apache-2.0 OR CC-BY-4.0
+  - Civora name and logo: trademark-protected (see TRADEMARK.md)
+
+Apache-2.0 components
+---------------------
+Portions of this repository are licensed under the Apache License, Version 2.0
+(the SDK under sdk/**). This NOTICE file is provided as required by Section 4(d)
+of that license. When redistributing those components, retain this NOTICE and a
+copy of LICENSES/Apache-2.0.txt.
+
+Trademarks
+----------
+"Civora" and the Civora logo are trademarks of the Civora Authors. Use of the
+Civora name and logo is governed by TRADEMARK.md and is NOT granted by the
+software or content licenses above.
+
+Third-party components
+----------------------
+Civora builds on open-source software that remains under its own license,
+including but not limited to:
+  - Bevy                                   (MIT OR Apache-2.0)
+  - Wasmtime                               (Apache-2.0 WITH LLVM-exception)
+  - rust-libp2p                            (MIT)
+  - ed25519-dalek, curve25519-dalek        (BSD-3-Clause)
+  - argon2, chacha20poly1305 (RustCrypto)  (MIT OR Apache-2.0)
+
+These dependencies are fetched at build time and are not relicensed here.
+Refer to each dependency's own license for its terms.
