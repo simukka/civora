@@ -517,6 +517,15 @@ Things to know that are not obvious from the code:
   A bare `--join` (no address) waits for mDNS discovery instead.
 - **mDNS is best-effort**: VPNs and multicast-filtering Wi-Fi break it;
   the printed multiaddr + `--join` is the guaranteed path.
+- **Start screen**: launching without lobby flags opens a menu — Host
+  World [H], Join World [J] (waits for mDNS), Play Offline [O]. CLI flags
+  skip it; `--join <multiaddr>` remains the direct-dial path. For
+  scripted runs, `CIVORA_MENU=host|join|offline` auto-selects an entry
+  (same spirit as `CIVORA_SCREENSHOT`). The menu logo is compiled into
+  the binary (release artifacts are bare executables); it is rendered
+  from `civora_logo.svg` — regenerate
+  `crates/civora-client/assets/logo.png` with inkscape if the SVG
+  changes.
 - **Sync consistency limits (M3)**: gossip is best-effort and there is
   no global action order yet, so concurrent conflicting edits of the
   same voxel can briefly diverge worlds. Beacons detect this within ~5 s

@@ -2,6 +2,7 @@
 name = "civora-identity"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 civora-sim = { path = "../civora-sim" }
