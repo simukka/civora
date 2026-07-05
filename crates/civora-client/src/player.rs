@@ -11,10 +11,12 @@ use crate::sim_bridge::SimWorld;
 
 pub const PLAYER_HALF_EXTENTS: Vec3 = Vec3::new(0.3, 0.9, 0.3);
 const EYE_ABOVE_CENTER: f32 = 0.72;
+// TODO: Expose as settings to the cell
 const WALK_SPEED: f32 = 5.6;
 const FLY_SPEED: f32 = 12.0;
 const GRAVITY: f32 = -24.0;
 const JUMP_VELOCITY: f32 = 8.2;
+// TODO: Expose as player settings
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 const SKIN: f32 = 1e-4;
 

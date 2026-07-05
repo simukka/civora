@@ -1,5 +1,15 @@
 use crate::block::BlockId;
 
+// A chunk is the atomic unit the world is stored, hashed, and rendered in.
+// It's a dense cube of blocks andis written to be size-agnostic.
+//  One caveat that matters for Civora specifically: CHUNK_SIZE feeds
+// content_hash, which is the basis for content-addressing and
+// reproducibility (per AGENTS.md). Two peers running different CHUNK_SIZE
+// values will produce different world hashes even for identical block
+// content, because the hash mixes in chunk coordinates. So chunk size is
+// effectively a protocol-level constant — it must be identical across all
+// clients in a realm, and changing it is a breaking change to world
+// snapshots and finality certificates, not a local tuning knob.
 pub const CHUNK_SIZE: i32 = 32;
 const SIZE: usize = CHUNK_SIZE as usize;
 const VOLUME: usize = SIZE * SIZE * SIZE;

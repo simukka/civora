@@ -1,0 +1,16 @@
+[package]
+name = "civora-identity"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+civora-sim = { path = "../civora-sim" }
+# Ed25519 matches libp2p peer identities, keeping the P2P milestone compatible.
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Key file at rest: Argon2id passphrase KDF + XChaCha20-Poly1305 AEAD.
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

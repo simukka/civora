@@ -1,13 +1,17 @@
 //! Bridge between the Bevy app and the deterministic simulation core.
 //!
 //! The client never mutates [`civora_sim::VoxelWorld`] directly: input
-//! systems push [`Action`]s onto [`ActionQueue`], and the queue is drained
-//! through [`civora_sim::tick::step`] on `FixedUpdate`. This is the seam
-//! where signed actions and cell-committee validation slot in later.
+//! systems push [`Action`]s onto [`ActionQueue`]; on `FixedUpdate` each
+//! action is signed with the player's identity key, verified into the
+//! session's [`SessionLog`] (the Reality Kernel gate — an action that fails
+//! verification never reaches the world), and only then applied through
+//! [`civora_sim::tick::step`]. Cell-committee validation slots in here later.
 
 use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 use civora_sim::{Action, ChunkPos, VoxelWorld, tick};
+
+use crate::identity::{LocalIdentity, SessionLog};
 
 /// How many chunks of flat test world to generate around the origin.
 const WORLD_RADIUS_CHUNKS: i32 = 3;
@@ -43,12 +47,26 @@ fn drain_action_queue(
     mut world: ResMut<SimWorld>,
     mut queue: ResMut<ActionQueue>,
     mut dirty: ResMut<DirtyChunks>,
+    mut local: ResMut<LocalIdentity>,
+    mut log: ResMut<SessionLog>,
 ) {
     if queue.0.is_empty() {
         return;
     }
-    let actions = std::mem::take(&mut queue.0);
-    for chunk_pos in tick::step(&mut world.0, &actions) {
+    let mut verified = Vec::with_capacity(queue.0.len());
+    for action in std::mem::take(&mut queue.0) {
+        let signed = local.identity.sign(action, local.next_seq);
+        // Kernel gate: only actions accepted into the signed log (valid
+        // signature, strictly increasing seq) may mutate the world.
+        match log.0.append(signed) {
+            Ok(()) => {
+                local.next_seq += 1;
+                verified.push(action);
+            }
+            Err(err) => warn!("rejected action: {err}"),
+        }
+    }
+    for chunk_pos in tick::step(&mut world.0, &verified) {
         dirty.0.insert(chunk_pos);
     }
 }

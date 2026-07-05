@@ -48,7 +48,7 @@ That is the magic moment.
 Build in this exact order:
 
 - [x] Rust/Bevy voxel client *(done 2026-07-05)*
-- [ ] Player identity and signed actions
+- [x] Player identity and signed actions *(done 2026-07-05)*
 - [ ] P2P lobby and world cell sync
 - [ ] Proposal manifest format
 - [ ] Voting UI
@@ -82,6 +82,29 @@ CI (`.github/workflows/ci.yml`): fmt + clippy + tests on Linux, then
 release client builds for Linux, Windows, and macOS uploaded as
 artifacts.
 
+### Milestone 2: player identity and signed actions (done 2026-07-05)
+
+New crate `crates/civora-identity` — Ed25519 keypairs (`ed25519-dalek`,
+the same scheme libp2p peer IDs use, so the P2P milestone can reuse the
+key):
+
+- `SignedAction` binds an action to its author and a per-author sequence
+  number via a domain-separated signature (`civora.action.v1`) over the
+  canonical `Action::encode` bytes (new in `civora-sim`, still
+  dependency-free).
+- `ActionLog` is append-only and verify-on-append: bad signatures and
+  non-increasing sequence numbers (replays) never enter it.
+  `verify_and_replay` re-checks the whole log and replays it onto a fresh
+  world; tests prove the result matches the directly-mutated world's
+  `content_hash` — the audit path cell committees will use later.
+- The key is stored passphrase-encrypted (Argon2id KDF +
+  XChaCha20-Poly1305), owner-only file permissions on Unix.
+
+Client: unlocks or creates the key file on the terminal before the window
+opens; every break/place is signed and must verify into the session log
+before `tick::step` applies it (the Reality Kernel gate); the debug HUD
+shows the player id and signed-action count.
+
 ## Build notes
 
 Things to know that are not obvious from the code:
@@ -100,6 +123,12 @@ Things to know that are not obvious from the code:
   dependency versions — this matters for the reproducible-build goal.
 - **macOS artifact is arm64** (`macos-latest` runner is Apple Silicon).
   Add an `x86_64-apple-darwin` matrix entry if Intel Macs are needed.
+- **Identity key file**: `<OS config dir>/civora/identity.key` (Linux:
+  `~/.config/civora/identity.key`). The client prompts for the passphrase
+  on the terminal at startup; set `CIVORA_PASSPHRASE` to skip the prompt
+  (scripted runs, launches without a terminal). There is no passphrase
+  recovery — losing it means a new identity. Point `XDG_CONFIG_HOME`
+  elsewhere to test with a throwaway identity.
 - **Dev screenshots**: press F12 in the client, or run with
   `CIVORA_SCREENSHOT=<path> CIVORA_SCREENSHOT_DELAY=<secs>` to auto-save
   one screenshot after startup (used for scripted verification; X11

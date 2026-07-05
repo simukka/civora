@@ -107,12 +107,15 @@ fn update_hotbar_selection(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_debug_text(
     diagnostics: Res<DiagnosticsStore>,
     player: Single<(&Player, &Transform)>,
     target: Res<TargetedBlock>,
     world: Res<crate::sim_bridge::SimWorld>,
     slot: Res<SelectedSlot>,
+    local: Res<crate::identity::LocalIdentity>,
+    log: Res<crate::identity::SessionLog>,
     mut text: Single<&mut Text, With<DebugText>>,
 ) {
     let (player, transform) = *player;
@@ -129,6 +132,12 @@ fn update_debug_text(
     let text = &mut text.0;
     text.clear();
     let _ = writeln!(text, "fps {fps:.0}");
+    let _ = writeln!(
+        text,
+        "id {} ({} signed actions)",
+        local.identity.player_id().short(),
+        log.0.len()
+    );
     let _ = writeln!(text, "pos {:.1} {:.1} {:.1}", pos.x, pos.y, pos.z);
     let _ = writeln!(
         text,

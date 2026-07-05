@@ -129,6 +129,49 @@ fn border_edit_dirties_neighbor_chunk() {
 }
 
 #[test]
+fn action_encoding_round_trips() {
+    let actions = [
+        Action::PlaceBlock {
+            pos: [-5, 3, 1_000_000],
+            block: BlockId::GLASS,
+        },
+        Action::PlaceBlock {
+            pos: [0, 0, 0],
+            block: BlockId::AIR,
+        },
+        Action::BreakBlock {
+            pos: [i32::MIN, -1, i32::MAX],
+        },
+    ];
+    for action in actions {
+        let mut bytes = Vec::new();
+        action.encode(&mut bytes);
+        assert_eq!(Action::decode(&bytes), Some(action), "for {action:?}");
+    }
+}
+
+#[test]
+fn action_decode_rejects_malformed_input() {
+    let mut bytes = Vec::new();
+    Action::PlaceBlock {
+        pos: [1, 2, 3],
+        block: BlockId::STONE,
+    }
+    .encode(&mut bytes);
+
+    assert_eq!(Action::decode(&[]), None);
+    assert_eq!(Action::decode(&bytes[..bytes.len() - 1]), None); // truncated
+
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert_eq!(Action::decode(&trailing), None); // trailing bytes
+
+    let mut bad_tag = bytes.clone();
+    bad_tag[0] = 9;
+    assert_eq!(Action::decode(&bad_tag), None); // unknown tag
+}
+
+#[test]
 fn raycast_hits_ground_from_above() {
     let world = VoxelWorld::flat(1);
     let hit =
@@ -162,4 +205,21 @@ fn raycast_from_inside_solid_reports_zero_normal() {
     assert_eq!(hit.pos, [0, 0, 0]);
     assert_eq!(hit.normal, [0, 0, 0]);
     assert_eq!(hit.distance, 0.0);
+}
+
+/// `CHUNK_SIZE` is a protocol-level constant, not a local tuning knob.
+///
+/// It feeds `VoxelWorld::content_hash` (via chunk coordinates), so two peers
+/// running different values would produce different world hashes for identical
+/// block content, breaking content-addressing, snapshots, and finality
+/// certificates. Changing it is a breaking protocol change and must be a
+/// deliberate, coordinated decision — this test fails loudly if it drifts.
+#[test]
+fn chunk_size_is_pinned_to_32() {
+    assert_eq!(
+        CHUNK_SIZE, 32,
+        "CHUNK_SIZE is a protocol constant; changing it breaks cross-peer \
+         content hashes and world snapshots. Update the protocol version and \
+         all peers deliberately, not just this test."
+    );
 }

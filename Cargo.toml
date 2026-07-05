@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/civora-sim", "crates/civora-client"]
+members = ["crates/civora-sim", "crates/civora-identity", "crates/civora-client"]
 
 [workspace.package]
 version = "0.1.0"
