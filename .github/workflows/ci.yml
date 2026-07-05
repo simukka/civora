@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 env:
@@ -77,3 +78,43 @@ jobs:
           name: civora-client-${{ matrix.name }}
           path: target/release/${{ matrix.binary }}
           if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    # Only run when a version tag (v1.2.3) is pushed, not on branch pushes or PRs.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package binaries
+        run: |
+          version="${GITHUB_REF_NAME}"
+          mkdir -p dist
+
+          # Linux (tar.gz)
+          chmod +x artifacts/civora-client-linux/civora-client
+          tar -czf "dist/civora-client-${version}-linux-x86_64.tar.gz" \
+            -C artifacts/civora-client-linux civora-client
+
+          # macOS (tar.gz)
+          chmod +x artifacts/civora-client-macos/civora-client
+          tar -czf "dist/civora-client-${version}-macos-x86_64.tar.gz" \
+            -C artifacts/civora-client-macos civora-client
+
+          # Windows (zip)
+          ( cd artifacts/civora-client-windows && \
+            zip -q "../../dist/civora-client-${version}-windows-x86_64.zip" civora-client.exe )
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
