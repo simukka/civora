@@ -1,4 +1,4 @@
-![image](civora_logo.svg)
+![image](assets/logo/logo_1024.png)
 
 Build it as a game first, but architect it like a universe protocol. 
 The first playable thing should be small and concrete: a peer-to-peer 

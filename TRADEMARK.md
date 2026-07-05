@@ -1,3 +1,5 @@
+![image](assets/logo/logo_1024.png)
+
 # Civora Trademark and Brand Policy
 
 Civora's source code and many of its assets are free and open (see

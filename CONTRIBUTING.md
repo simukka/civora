@@ -1,3 +1,5 @@
+![image](assets/logo/logo_1024.png)
+
 # Contributing to Civora
 
 Thanks for helping build Civora. This project's guiding rule (see

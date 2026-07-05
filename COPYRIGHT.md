@@ -1,3 +1,5 @@
+![image](assets/logo/logo_1024.png)
+
 # Civora Copyright and Licensing
 
 Civora is intentionally multi-licensed. This document is the authoritative,

@@ -1,4 +1,4 @@
-![image](civora_logo.svg)
+![image](assets/logo/logo_1024.png)
 
 ## Core concept
 The initial game is Genesis Realm:
@@ -9,10 +9,9 @@ realms. A realm can be anything. A space-trading sim, arena shooter,
 city builder, or real-time political economy, but the first realm should 
 be simple enough for 12 people to actually experiment.
 
-![image](artwork/concept_loading.png)
-
 ## Artwork concepts
 
+![image](artwork/concept0.png)
 ![image](artwork/concept1.png)
 ![image](artwork/concept2.png)
 ![image](artwork/concept3.png)
