@@ -1,3 +1,5 @@
+![image](logo_concept.png)
+
 Build it as a game first, but architect it like a universe protocol. 
 The first playable thing should be small and concrete: a peer-to-peer 
 voxel survival/building world with portals, AI-assisted mod creation, 
@@ -26,6 +28,8 @@ The key rule is:
 
 That keeps “anyone can push” alive without letting one malicious patch 
 brick everyone’s client.
+
+![image](concept_loading.png)
 
 ### Recommended stack
 Use Rust as the primary language. The project needs a safe native client, 
@@ -84,6 +88,7 @@ from host-machine differences and pins toolchains/dependencies.
 | Source workflow                 | Git commits + signed proposal manifests                              |
 
 ### Layers
+```
 ┌──────────────────────────────────────────────┐
 │  Player Client                               │
 │                                              │
@@ -117,6 +122,7 @@ from host-machine differences and pins toolchains/dependencies.
 │  - world snapshots                           │
 │  - local player keys                         │
 └──────────────────────────────────────────────┘
+```
 
 ### Kernel
 The Reality Kernel is the only thing we would not make freely hot-patchable at first. 
