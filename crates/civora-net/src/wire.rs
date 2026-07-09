@@ -5,12 +5,15 @@
 //! trailing bytes, and non-canonical orderings, so decode(encode(m))
 //! round-trips and nothing else parses.
 
+use civora_governance::{SignedCertificate, SignedProposal, SignedVote};
 use civora_identity::{PlayerId, SignedAction};
 use civora_sim::{CHUNK_SIZE, Chunk, ChunkPos, VoxelWorld};
 
 /// Protocol version, embedded in gossip topic names and the join handshake.
-/// Bump on any breaking wire or sim-semantics change.
-pub const PROTO_VERSION: u32 = 1;
+/// Bump on any breaking wire or sim-semantics change. Version 2 adds the
+/// governance join-sync payload to [`SyncResponse::Accept`] and the
+/// certificate gossip variant — a breaking response change.
+pub const PROTO_VERSION: u32 = 2;
 
 /// Hard cap on an encoded sync request (a join handshake is tiny).
 pub const MAX_REQUEST_BYTES: usize = 4 * 1024;
@@ -19,6 +22,14 @@ pub const MAX_REQUEST_BYTES: usize = 4 * 1024;
 /// Whole-world transfer is a single-cell simplification; cell partitioning
 /// replaces it before worlds outgrow this.
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Decode caps on the governance payload a join response carries. A worst-case
+/// ledger entry is a full certificate (~131 KiB) plus its proposal; 64 of those
+/// is ~34 MiB, safely under [`MAX_RESPONSE_BYTES`] alongside the world. Larger
+/// ledgers wait for announce-then-fetch in the patch-pack milestone.
+pub const MAX_SYNC_LEDGER_ENTRIES: usize = 64;
+pub const MAX_SYNC_OPEN_PROPOSALS: usize = 64;
+pub const MAX_SYNC_VOTES: usize = 8192;
 
 /// Bytes in one transferred chunk payload ([`Chunk::block_bytes`] order).
 pub const CHUNK_BYTES: usize = (CHUNK_SIZE as usize).pow(3);
@@ -80,6 +91,15 @@ impl CellRef {
         format!("civora/{PROTO_VERSION}/{}/{}/state", self.realm, self.cell)
     }
 
+    /// Gossipsub topic for governance traffic (signed proposals and votes)
+    /// in this cell.
+    pub fn proposals_topic(&self) -> String {
+        format!(
+            "civora/{PROTO_VERSION}/{}/{}/proposals",
+            self.realm, self.cell
+        )
+    }
+
     /// `realm_len (u8) || realm bytes || cell (u64 LE)`.
     pub fn encode(&self, out: &mut Vec<u8>) {
         assert!(self.realm.len() <= u8::MAX as usize, "realm name too long");
@@ -104,6 +124,14 @@ pub enum GossipMsg {
     Action(SignedAction),
     /// Periodic state summary for divergence detection (the `state` topic).
     Beacon(StateBeacon),
+    /// One signed proposal manifest (the `proposals` topic). Boxed: the
+    /// manifest dwarfs every other variant.
+    Proposal(Box<SignedProposal>),
+    /// One signed ballot (the `proposals` topic).
+    Vote(SignedVote),
+    /// One signed finality certificate (the `proposals` topic). Boxed: a
+    /// full-roster certificate is the largest gossip payload (~131 KiB).
+    Certificate(Box<SignedCertificate>),
 }
 
 /// Summary of a peer's view of the cell: the per-author sequence vector and
@@ -139,6 +167,18 @@ impl GossipMsg {
                 }
                 out.extend_from_slice(&beacon.content_hash.to_le_bytes());
             }
+            GossipMsg::Proposal(signed) => {
+                out.push(2);
+                signed.encode(out);
+            }
+            GossipMsg::Vote(signed) => {
+                out.push(3);
+                signed.encode(out);
+            }
+            GossipMsg::Certificate(signed) => {
+                out.push(4);
+                signed.encode(out);
+            }
         }
     }
 
@@ -173,6 +213,20 @@ impl GossipMsg {
                     seqs,
                     content_hash,
                 }))
+            }
+            2 => {
+                let (signed, rest) = SignedProposal::decode(rest)?;
+                rest.is_empty()
+                    .then(|| GossipMsg::Proposal(Box::new(signed)))
+            }
+            3 => {
+                let (signed, rest) = SignedVote::decode(rest)?;
+                rest.is_empty().then_some(GossipMsg::Vote(signed))
+            }
+            4 => {
+                let (signed, rest) = SignedCertificate::decode(rest)?;
+                rest.is_empty()
+                    .then(|| GossipMsg::Certificate(Box::new(signed)))
             }
             _ => None,
         }
@@ -270,6 +324,13 @@ pub enum SyncResponse {
         content_hash: u64,
         log: Vec<SignedAction>,
         chunks: Vec<(ChunkPos, Vec<u8>)>,
+        /// Accepted governance state: each proposal with the certificate that
+        /// carried it to finality, so a late joiner rebuilds its ledger.
+        ledger: Vec<(SignedProposal, SignedCertificate)>,
+        /// Proposals whose voting window is still open.
+        open_proposals: Vec<SignedProposal>,
+        /// Ballots for those open proposals.
+        open_votes: Vec<SignedVote>,
     },
     Reject {
         reason: RejectReason,
@@ -285,6 +346,9 @@ impl SyncResponse {
                 content_hash,
                 log,
                 chunks,
+                ledger,
+                open_proposals,
+                open_votes,
             } => {
                 out.push(0);
                 out.extend_from_slice(&proto.to_le_bytes());
@@ -301,6 +365,19 @@ impl SyncResponse {
                         out.extend_from_slice(&coord.to_le_bytes());
                     }
                     out.extend_from_slice(bytes);
+                }
+                out.extend_from_slice(&(ledger.len() as u32).to_le_bytes());
+                for (proposal, certificate) in ledger {
+                    proposal.encode(out);
+                    certificate.encode(out);
+                }
+                out.extend_from_slice(&(open_proposals.len() as u32).to_le_bytes());
+                for proposal in open_proposals {
+                    proposal.encode(out);
+                }
+                out.extend_from_slice(&(open_votes.len() as u32).to_le_bytes());
+                for vote in open_votes {
+                    vote.encode(out);
                 }
             }
             SyncResponse::Reject { reason } => {
@@ -343,12 +420,46 @@ impl SyncResponse {
                     chunks.push((pos, blocks.to_vec()));
                     rest = tail;
                 }
+                let (n_ledger, mut rest) = u32_le(rest)?;
+                if n_ledger as usize > MAX_SYNC_LEDGER_ENTRIES {
+                    return None;
+                }
+                let mut ledger = Vec::new();
+                for _ in 0..n_ledger {
+                    let (proposal, tail) = SignedProposal::decode(rest)?;
+                    let (certificate, tail) = SignedCertificate::decode(tail)?;
+                    ledger.push((proposal, certificate));
+                    rest = tail;
+                }
+                let (n_open, mut rest) = u32_le(rest)?;
+                if n_open as usize > MAX_SYNC_OPEN_PROPOSALS {
+                    return None;
+                }
+                let mut open_proposals = Vec::new();
+                for _ in 0..n_open {
+                    let (proposal, tail) = SignedProposal::decode(rest)?;
+                    open_proposals.push(proposal);
+                    rest = tail;
+                }
+                let (n_votes, mut rest) = u32_le(rest)?;
+                if n_votes as usize > MAX_SYNC_VOTES {
+                    return None;
+                }
+                let mut open_votes = Vec::new();
+                for _ in 0..n_votes {
+                    let (vote, tail) = SignedVote::decode(rest)?;
+                    open_votes.push(vote);
+                    rest = tail;
+                }
                 rest.is_empty().then_some(SyncResponse::Accept {
                     proto,
                     cell,
                     content_hash,
                     log,
                     chunks,
+                    ledger,
+                    open_proposals,
+                    open_votes,
                 })
             }
             1 => match rest {
@@ -420,8 +531,9 @@ mod tests {
         let (decoded, rest) = CellRef::decode(&bytes).unwrap();
         assert_eq!(decoded, cell);
         assert!(rest.is_empty());
-        assert_eq!(cell.actions_topic(), "civora/1/genesis/0/actions");
-        assert_eq!(cell.state_topic(), "civora/1/genesis/0/state");
+        assert_eq!(cell.actions_topic(), "civora/2/genesis/0/actions");
+        assert_eq!(cell.state_topic(), "civora/2/genesis/0/state");
+        assert_eq!(cell.proposals_topic(), "civora/2/genesis/0/proposals");
     }
 
     #[test]
@@ -464,6 +576,49 @@ mod tests {
     }
 
     #[test]
+    fn gossip_proposal_and_vote_round_trip() {
+        use civora_governance::{
+            Cid, Proposal, ProposalId, ProposalKind, RollbackPlan, Vote, VoteChoice,
+        };
+
+        let identity = identity();
+        let proposal = Proposal {
+            kind: ProposalKind::AssetPatch,
+            author_public_key: identity.player_id(),
+            git_commit_hash: [0xAA; 20],
+            source_bundle_cid: Cid([1; 32]),
+            build_manifest_cid: Cid([2; 32]),
+            wasm_module_cids: vec![],
+            asset_cids: vec![Cid([3; 32])],
+            migration_cids: vec![],
+            governance_change: None,
+            test_results_cid: Cid([4; 32]),
+            activation_epoch: 7,
+            rollback_plan: RollbackPlan::RevertToLastSignedSnapshot,
+        };
+        let vote = Vote {
+            proposal_id: ProposalId([5; 32]),
+            voter: identity.player_id(),
+            choice: VoteChoice::Yes,
+        };
+
+        for msg in [
+            GossipMsg::Proposal(Box::new(SignedProposal::sign(&identity, proposal))),
+            GossipMsg::Vote(SignedVote::sign(&identity, vote)),
+        ] {
+            let mut bytes = Vec::new();
+            msg.encode(&mut bytes);
+            assert_eq!(GossipMsg::decode(&bytes), Some(msg));
+
+            for len in 0..bytes.len() {
+                assert_eq!(GossipMsg::decode(&bytes[..len]), None);
+            }
+            bytes.push(0);
+            assert_eq!(GossipMsg::decode(&bytes), None);
+        }
+    }
+
+    #[test]
     fn sync_request_round_trips() {
         let req = SyncRequest::join(CellRef::genesis());
         let mut bytes = Vec::new();
@@ -495,6 +650,9 @@ mod tests {
             content_hash: world.content_hash(),
             log: vec![signed(0), signed(3)],
             chunks: snapshot_chunks(&world),
+            ledger: vec![],
+            open_proposals: vec![],
+            open_votes: vec![],
         };
         let mut bytes = Vec::new();
         resp.encode(&mut bytes);
@@ -524,6 +682,9 @@ mod tests {
             content_hash: world.content_hash(),
             log: vec![signed(0)],
             chunks: snapshot_chunks(&world),
+            ledger: vec![],
+            open_proposals: vec![],
+            open_votes: vec![],
         };
         let mut bytes = Vec::new();
         resp.encode(&mut bytes);
@@ -566,5 +727,116 @@ mod tests {
             world_from_chunks(&chunks).unwrap().content_hash(),
             world.content_hash()
         );
+    }
+
+    /// A consistent proposal, its accepting certificate, and one yes ballot,
+    /// all from the fixed test identity.
+    fn gov_fixture() -> (SignedProposal, SignedCertificate, SignedVote) {
+        use civora_governance::{Cid, Proposal, ProposalKind, RollbackPlan, Vote, VoteChoice};
+        use std::collections::BTreeMap;
+
+        let id = identity();
+        let proposal = Proposal {
+            kind: ProposalKind::AssetPatch,
+            author_public_key: id.player_id(),
+            git_commit_hash: [0x33; 20],
+            source_bundle_cid: Cid([1; 32]),
+            build_manifest_cid: Cid([2; 32]),
+            wasm_module_cids: vec![],
+            asset_cids: vec![Cid([3; 32])],
+            migration_cids: vec![],
+            governance_change: None,
+            test_results_cid: Cid([4; 32]),
+            activation_epoch: 5,
+            rollback_plan: RollbackPlan::RevertToLastSignedSnapshot,
+        };
+        let signed_proposal = SignedProposal::sign(&id, proposal.clone());
+        let signed_vote = SignedVote::sign(
+            &id,
+            Vote {
+                proposal_id: proposal.id(),
+                voter: id.player_id(),
+                choice: VoteChoice::Yes,
+            },
+        );
+        let roster = vec![id.player_id()];
+        let ballots: BTreeMap<PlayerId, SignedVote> = [(id.player_id(), signed_vote)].into();
+        let certificate =
+            SignedCertificate::certify(&id, &proposal, &roster, &ballots, 1, 5).unwrap();
+        (signed_proposal, certificate, signed_vote)
+    }
+
+    #[test]
+    fn gossip_certificate_round_trips() {
+        let (_, certificate, _) = gov_fixture();
+        let msg = GossipMsg::Certificate(Box::new(certificate));
+        let mut bytes = Vec::new();
+        msg.encode(&mut bytes);
+        assert_eq!(bytes[0], 4, "certificate gossip tag");
+        assert_eq!(GossipMsg::decode(&bytes), Some(msg));
+
+        for len in 0..bytes.len() {
+            assert_eq!(GossipMsg::decode(&bytes[..len]), None);
+        }
+        bytes.push(0);
+        assert_eq!(GossipMsg::decode(&bytes), None);
+    }
+
+    #[test]
+    fn sync_response_carries_governance_payload() {
+        let world = VoxelWorld::flat(1);
+        let (proposal, certificate, vote) = gov_fixture();
+        let resp = SyncResponse::Accept {
+            proto: PROTO_VERSION,
+            cell: CellRef::genesis(),
+            content_hash: world.content_hash(),
+            log: vec![signed(0)],
+            chunks: snapshot_chunks(&world),
+            ledger: vec![(proposal.clone(), certificate)],
+            open_proposals: vec![proposal],
+            open_votes: vec![vote],
+        };
+        let mut bytes = Vec::new();
+        resp.encode(&mut bytes);
+        assert_eq!(SyncResponse::decode(&bytes), Some(resp));
+
+        for len in 0..bytes.len() {
+            assert_eq!(SyncResponse::decode(&bytes[..len]), None);
+        }
+        bytes.push(0);
+        assert_eq!(SyncResponse::decode(&bytes), None);
+    }
+
+    #[test]
+    fn sync_response_rejects_over_cap_governance_counts() {
+        // An empty-world Accept ends with three zero count fields
+        // (ledger, open_proposals, open_votes) — the last 12 bytes.
+        let world = VoxelWorld::flat(0);
+        let base = SyncResponse::Accept {
+            proto: PROTO_VERSION,
+            cell: CellRef::genesis(),
+            content_hash: world.content_hash(),
+            log: vec![],
+            chunks: snapshot_chunks(&world),
+            ledger: vec![],
+            open_proposals: vec![],
+            open_votes: vec![],
+        };
+        let mut encoded = Vec::new();
+        base.encode(&mut encoded);
+        let n = encoded.len();
+
+        // Each count sits at a known offset from the end; a value over its cap
+        // must be rejected outright.
+        for (from_end, over) in [
+            (12, MAX_SYNC_LEDGER_ENTRIES as u32 + 1),
+            (8, MAX_SYNC_OPEN_PROPOSALS as u32 + 1),
+            (4, MAX_SYNC_VOTES as u32 + 1),
+        ] {
+            let mut bytes = encoded.clone();
+            let at = n - from_end;
+            bytes[at..at + 4].copy_from_slice(&over.to_le_bytes());
+            assert_eq!(SyncResponse::decode(&bytes), None, "cap at -{from_end}");
+        }
     }
 }

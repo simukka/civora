@@ -17,16 +17,27 @@ pub struct Behaviour {
     pub sync: request_response::Behaviour<SyncCodec>,
 }
 
+/// Gossipsub message size cap. The default (64 KiB) is plenty for actions
+/// and beacons but below the worst-case encoded [`civora_governance::MAX_PROPOSAL_BYTES`]
+/// proposal (192 KiB) and worst-case [`civora_governance::MAX_CERTIFICATE_BYTES`]
+/// certificate (~132 KiB), so both full manifests and full-roster certificates
+/// fit with framing to spare. Announcement + content-addressed fetch replaces
+/// whole-manifest gossip in the patch-pack milestone.
+const MAX_GOSSIP_BYTES: usize = 256 * 1024;
+
 impl Behaviour {
     pub fn new(key: &Keypair, enable_mdns: bool) -> Result<Self, String> {
-        // Defaults give us signed messages with strict validation; every
-        // gossiped payload is additionally a SignedAction verified by the
-        // kernel gate, so transport-level signing is belt and braces.
-        let gossipsub = gossipsub::Behaviour::new(
-            gossipsub::MessageAuthenticity::Signed(key.clone()),
-            gossipsub::Config::default(),
-        )
-        .map_err(str::to_owned)?;
+        // Defaults (plus the size cap) give us signed messages with strict
+        // validation; every gossiped payload is additionally a signed
+        // message verified by its own gate, so transport-level signing is
+        // belt and braces.
+        let config = gossipsub::ConfigBuilder::default()
+            .max_transmit_size(MAX_GOSSIP_BYTES)
+            .build()
+            .map_err(|err| err.to_string())?;
+        let gossipsub =
+            gossipsub::Behaviour::new(gossipsub::MessageAuthenticity::Signed(key.clone()), config)
+                .map_err(str::to_owned)?;
 
         let mdns = enable_mdns
             .then(|| {

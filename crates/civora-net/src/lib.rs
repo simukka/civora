@@ -16,6 +16,7 @@ mod event_loop;
 pub mod peer;
 pub mod wire;
 
+use civora_governance::{SignedCertificate, SignedProposal, SignedVote};
 use civora_identity::{ActionLog, PlayerId, SignedAction};
 use civora_sim::{ChunkPos, VoxelWorld};
 
@@ -51,6 +52,15 @@ pub struct Snapshot {
     /// Canonical order: sorted by [`ChunkPos`], empty chunks omitted
     /// (build with [`wire::snapshot_chunks`]).
     pub chunks: Vec<(ChunkPos, Vec<u8>)>,
+    /// Accepted governance state: each proposal with its finality certificate,
+    /// so a joiner rebuilds its ledger. Truncate to
+    /// [`wire::MAX_SYNC_LEDGER_ENTRIES`] before sending.
+    pub ledger: Vec<(SignedProposal, SignedCertificate)>,
+    /// Proposals whose voting window is still open (up to
+    /// [`wire::MAX_SYNC_OPEN_PROPOSALS`]).
+    pub open_proposals: Vec<SignedProposal>,
+    /// Ballots for those open proposals (up to [`wire::MAX_SYNC_VOTES`]).
+    pub open_votes: Vec<SignedVote>,
 }
 
 /// Client → network thread.
@@ -59,6 +69,17 @@ pub enum NetCommand {
     PublishAction(SignedAction),
     /// Gossip this cell's periodic state beacon.
     PublishBeacon(StateBeacon),
+    /// Gossip a locally signed proposal manifest. Gossipsub does not loop
+    /// messages back to their publisher — insert into your own store too.
+    /// Boxed: the manifest dwarfs every other variant.
+    PublishProposal(Box<SignedProposal>),
+    /// Gossip a locally signed ballot. Same loop-back caveat as
+    /// [`NetCommand::PublishProposal`].
+    PublishVote(SignedVote),
+    /// Gossip a locally assembled finality certificate. Same loop-back caveat
+    /// as [`NetCommand::PublishProposal`]. Boxed: a full-roster certificate is
+    /// the largest gossip payload.
+    PublishCertificate(Box<SignedCertificate>),
     /// Answer a [`NetEvent::SnapshotRequested`].
     ProvideSnapshot { request_id: u64, snapshot: Snapshot },
     /// Re-run the join flow (divergence recovery), preferably against
@@ -97,6 +118,23 @@ pub enum NetEvent {
     /// A gossiped action from another peer. Not yet verified — feed it
     /// through [`ActionLog::append`] before applying.
     RemoteAction(SignedAction),
+    /// A gossiped proposal manifest. Structurally decoded only — call
+    /// [`SignedProposal::verify`] and [`civora_governance::Proposal::validate`]
+    /// before trusting it. Unlike actions, governance gossip is delivered
+    /// even while joining: verification is self-contained and store
+    /// insertion is idempotent. Boxed: the manifest dwarfs every other
+    /// variant.
+    RemoteProposal(Box<SignedProposal>),
+    /// A gossiped ballot. Structurally decoded only — call
+    /// [`SignedVote::verify`] before counting it. Delivered even while
+    /// joining, like [`NetEvent::RemoteProposal`].
+    RemoteVote(SignedVote),
+    /// A gossiped finality certificate. Structurally decoded only — verify it
+    /// through the ledger gate ([`civora_governance::Ledger::append`], which
+    /// calls [`SignedCertificate::verify`]) before trusting it. Delivered even
+    /// while joining, like [`NetEvent::RemoteProposal`]. Boxed: the largest
+    /// gossip payload.
+    RemoteCertificate(Box<SignedCertificate>),
     /// Another peer's state beacon, for divergence detection.
     RemoteBeacon {
         from: PlayerId,

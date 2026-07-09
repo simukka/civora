@@ -2151,11 +2151,22 @@ name = "civora-client"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "civora-governance",
  "civora-identity",
  "civora-net",
  "civora-sim",
  "dirs",
  "rpassword",
+ "tempfile",
+]
+
+[[package]]
+name = "civora-governance"
+version = "0.1.0"
+dependencies = [
+ "civora-identity",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -2175,6 +2186,7 @@ name = "civora-net"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "civora-governance",
  "civora-identity",
  "civora-sim",
  "futures",

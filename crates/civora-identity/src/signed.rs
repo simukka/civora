@@ -90,12 +90,23 @@ impl SignedAction {
     /// This is the Reality Kernel gate: an action may reach the world only
     /// if this passes (plus the sequence check in [`crate::ActionLog`]).
     pub fn verify(&self) -> Result<(), VerifyError> {
-        let key =
-            VerifyingKey::from_bytes(&self.author.0).map_err(|_| VerifyError::BadAuthorKey)?;
         let payload = signing_payload(&self.author, self.seq, &self.action);
-        key.verify_strict(&payload, &Signature::from_bytes(&self.signature))
-            .map_err(|_| VerifyError::BadSignature)
+        verify_payload(&self.author, &payload, &self.signature)
     }
+}
+
+/// Verify a raw Ed25519 signature by `author` over a domain-separated
+/// payload (built by the caller, e.g. with [`Identity::sign_payload`]).
+///
+/// [`Identity::sign_payload`]: crate::Identity::sign_payload
+pub fn verify_payload(
+    author: &PlayerId,
+    payload: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), VerifyError> {
+    let key = VerifyingKey::from_bytes(&author.0).map_err(|_| VerifyError::BadAuthorKey)?;
+    key.verify_strict(payload, &Signature::from_bytes(signature))
+        .map_err(|_| VerifyError::BadSignature)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

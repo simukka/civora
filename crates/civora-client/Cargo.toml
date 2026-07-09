@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 civora-sim = { path = "../civora-sim" }
 civora-identity = { path = "../civora-identity" }
+civora-governance = { path = "../civora-governance" }
 civora-net = { path = "../civora-net" }
 # Identity key file location + terminal passphrase prompt.
 dirs = "6"
@@ -34,3 +35,7 @@ bevy = { version = "0.19", default-features = false, features = [
     "bevy_audio",
     "vorbis",
 ] }
+
+[dev-dependencies]
+# Temp ledger files for certificate-application tests.
+tempfile = "3"

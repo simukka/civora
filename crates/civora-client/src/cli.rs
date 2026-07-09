@@ -6,6 +6,8 @@
 //! civora-client --join [ADDR]      join ADDR, or the first mDNS peer if omitted
 //! civora-client --key-file PATH    identity key override (two instances on
 //!                                  one machine need distinct identities)
+//! civora-client --ledger-file PATH accepted-proposal ledger override (two
+//!                                  instances need distinct ledgers, like keys)
 //! ```
 
 use std::path::PathBuf;
@@ -24,6 +26,7 @@ pub enum NetMode {
 pub struct CliArgs {
     pub net: NetMode,
     pub key_file: Option<PathBuf>,
+    pub ledger_file: Option<PathBuf>,
 }
 
 pub fn parse() -> Result<CliArgs, String> {
@@ -51,6 +54,12 @@ pub fn parse() -> Result<CliArgs, String> {
                     .next()
                     .ok_or_else(|| "--key-file needs a path".to_owned())?;
                 cli.key_file = Some(PathBuf::from(path));
+            }
+            "--ledger-file" => {
+                let path = args
+                    .next()
+                    .ok_or_else(|| "--ledger-file needs a path".to_owned())?;
+                cli.ledger_file = Some(PathBuf::from(path));
             }
             other => return Err(format!("unknown argument {other:?} (see --host/--join)")),
         }

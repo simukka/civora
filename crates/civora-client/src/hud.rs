@@ -131,6 +131,7 @@ fn update_debug_text(
     log: Res<crate::identity::SessionLog>,
     net: Res<crate::net::NetStatus>,
     roster: Res<crate::net::PeerRoster>,
+    store: Res<crate::voting::ProposalStore>,
     mut text: Single<&mut Text, With<DebugText>>,
 ) {
     let (player, transform) = *player;
@@ -180,6 +181,8 @@ fn update_debug_text(
     if let Some(err) = &net.last_error {
         let _ = writeln!(text, "net error: {err}");
     }
+
+    let _ = writeln!(text, "proposals: {} open (P)", store.open_count());
 
     let _ = writeln!(text, "click to grab cursor, Esc to release");
 }

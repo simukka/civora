@@ -377,11 +377,11 @@ Build in this exact order:
 - [x] Rust/Bevy voxel client *(done 2026-07-05)*
 - [x] Player identity and signed actions *(done 2026-07-05)*
 - [x] P2P lobby and world cell sync (plans/cozy-singing-tiger.md) *(done 2026-07-05)*
-- [ ] Proposal manifest format
-- [ ] Voting UI
-- [ ] Accepted proposal ledger
-- [ ] Content-addressed patch packs
-- [ ] Wasm plugin ABI
+- [x] Proposal manifest format (plans/create-a-plan-for-imperative-dijkstra.md) *(done 2026-07-06)*
+- [x] Voting UI (plans/approve-a-plan-for-imperative-dijkstra.md) *(done 2026-07-08)*
+- [x] Accepted proposal ledger (plans/accepted-proposal-ledger.md) *(done 2026-07-09)*
+- [ ] Content-addressed patch packs (plans/patch-packs.md)
+- [ ] Wasm plugin ABI (plans/wasm-abi.md)
 - [ ] Asset hot patch
 - [ ] Gameplay Wasm hot patch
 - [ ] Portal to second realm
@@ -464,7 +464,8 @@ sync message is the seam where cell partitioning slots in later.
   later milestone): the peer with the lexicographically larger PlayerId
   yields and resyncs. A seq deficit that persists across two beacons =
   missed gossip, same recovery. The HUD shows `DIVERGED - resyncing`.
-- **Client**: `--host` / `--join [multiaddr]` / `--key-file` flags
+- **Client**: `--host` / `--join [multiaddr]` / `--key-file` /
+  `--ledger-file` flags
   (offline single player is unchanged when no flags are given); joiners
   start with an empty world and gated input until the sync lands; the
   debug HUD shows net phase and the peer roster.
@@ -472,6 +473,141 @@ sync message is the seam where cell partitioning slots in later.
   nodes over loopback TCP — join + hash match, bidirectional gossip
   convergence, replay rejection, resync recovery. mDNS is off in tests
   (CI runners filter multicast).
+
+### Milestone 4: proposal manifest format (done 2026-07-06)
+
+New crate `crates/civora-governance` — the "git commits become
+proposals" seed. This milestone is the format and signatures only; P2P
+distribution, voting, and the accepted-proposal ledger are the next
+milestones.
+
+- `Proposal` realizes the manifest shape above (git commit hash,
+  content ids for source bundle / build manifest / wasm modules /
+  assets / migrations, optional governance change, activation epoch,
+  machine-executable rollback plan) plus an explicit `ProposalKind`, so
+  the voting-rules table can classify a proposal before fetching any
+  content. `validate()` cross-checks kind against contents and rejects
+  kernel changes (not in-game hot patches in v1).
+- The encoding is hand-rolled canonical bytes like `Action` and the
+  wire messages, but with a leading format-version byte: proposals are
+  persisted governance records the future ledger must decode long
+  after the session that wrote them. Decoders reject unknown
+  versions/tags, truncation, trailing bytes, oversized lists, and
+  non-canonical cid lists (set lists strictly ascending, migration
+  lists duplicate-free).
+- `ProposalId` is never stored inside the manifest: like a git commit
+  hash it is always derived — SHA-256 over
+  `civora.proposal-id.v1 || canonical bytes` — so an id mismatch is
+  structurally impossible and the id is stable before and after
+  signing. This is the value the future `FinalityCertificate` will
+  reference. A golden-vector test pins the exact id of a fixture
+  proposal so encoding drift cannot land silently.
+- `SignedProposal` signs under the new `civora.proposal.v1` domain;
+  tests prove an action signature can never verify as a proposal
+  signature. There is no seq number: replaying a proposal reproduces
+  the same bytes and thus the same id, and dedup belongs to the
+  accepted-proposal ledger.
+
+### Milestone 5: voting UI (done 2026-07-08)
+
+Proposals now travel and collect signed votes. Quorum evaluation,
+finality certificates, and the accepted-proposal ledger are milestone 6;
+nothing is applied yet.
+
+- **Votes**: `Vote` (`crates/civora-governance/src/vote.rs`) is a
+  fixed-size record — format version, proposal id, voter, yes/no — signed
+  under the new `civora.vote.v1` domain (`SignedVote`, 130 bytes).
+  Cross-domain tests prove action/proposal signatures never verify as
+  votes. There is no seq number: a replayed ballot is idempotent under
+  latest-received-wins, and milestone 6 finality must bind votes to an
+  ordering anyway (gossip arrival order is not consistent across peers).
+- **Distribution**: one new gossip topic
+  (`civora/1/genesis/0/proposals`) carries `GossipMsg::Proposal` (tag 2)
+  and `GossipMsg::Vote` (tag 3). Unlike actions, governance gossip is
+  delivered to the client even while joining: verification is
+  self-contained and store insertion idempotent, so there is nothing for
+  a snapshot to pre-empt.
+- **Client store** (`crates/civora-client/src/voting.rs`):
+  `ProposalStore` admits a proposal only through
+  `SignedProposal::verify()` + `Proposal::validate()` and a vote only
+  through `SignedVote::verify()`; votes arriving before their proposal
+  are parked (capped) and attached when it lands. Revote = latest
+  received replaces. The tally is display-only in this milestone.
+- **UI**: the debug HUD always shows `proposals: N open (P)`; `P` opens
+  a keyboard-only text panel (list -> Up/Down + Enter -> detail with
+  full manifest fields, live yes/no tally, and `Y`/`N` to cast or flip
+  your own signed vote). The cursor grab and all existing bindings are
+  untouched.
+- **Demo path**: F9 publishes a distinct valid sample proposal (there is
+  no commit-to-proposal pipeline yet); `CIVORA_TEST_PROPOSAL=1`
+  auto-publishes one shortly after startup for scripted runs.
+- Integration test (`proposals_and_votes_gossip` in
+  `crates/civora-net/tests/sync.rs`): a host gossips a >64 KiB proposal
+  to a joiner (pinning the raised gossipsub size limit) and receives the
+  joiner's verified yes ballot back.
+
+### Milestone 6: accepted proposal ledger (done 2026-07-09)
+
+Votes now mean something: a wall-clock voting window closes at a
+proposal's `activation_epoch`, any peer past quorum assembles a
+self-contained finality certificate and gossips it, and accepted
+proposals enter an append-only, disk-persisted ledger. Join sync closes
+the milestone 5 late-joiner gap. **Nothing is applied** — acceptance is
+a ledger entry plus UI status until content-addressed patch packs.
+
+- **Epochs** (`crates/civora-governance/src/epoch.rs`): pure arithmetic,
+  `epoch = unix_secs / EPOCH_SECS` (`EPOCH_SECS = 30`). No sync protocol;
+  every peer derives the same number from its own clock. Certificate
+  verification is clock-free, so a clock skew only affects countdown UX.
+- **Finality certificate** (`certificate.rs`): a
+  `FinalityCertificate` embeds the certifier's claimed
+  `eligible_roster` and the `(voter, signature)` pairs behind the yes/no
+  counts; the roster root is derived on demand, never stored. It is
+  wrapped certifier-signed under the new `civora.certificate.v1` domain
+  (`SignedCertificate`); `verify` is internal-consistency only (each
+  embedded vote re-verifies against a vote reconstructed from the
+  certificate, the certifier must sit in its own roster, the tally must
+  clear quorum, `accepted_epoch >= activation_epoch`). Domains:
+  `civora.certificate.v1` (signature), `civora.roster-root.v1` (roster
+  root). A golden vector pins the encoding and roster root.
+- **Quorum** (`quorum_passes`): ≥1 ballot cast; Economy/Governance need a
+  two-thirds supermajority (`yes*3 > roster*2`), all other kinds a simple
+  majority (`yes*2 > roster`), both strict; Kernel never passes.
+- **Ledger** (`ledger.rs`): magic `CIVLGR1\n` then self-delimiting
+  `SignedProposal || SignedCertificate` entries; **whole-file rewrite via
+  temp file + atomic rename** on every accepted append. `Ledger::append`
+  is the sole gate (re-verifies proposal + certificate against the
+  current rule version, dedups by `ProposalId` — first valid certificate
+  wins); `load` rebuilds through it, so a corrupt ledger is rejected, not
+  silently truncated. `governance_rule_version` = `1 + accepted
+  Governance-kind entries`.
+- **Wire** (`PROTO_VERSION` **bumps to 2**, topics become
+  `civora/2/...`): `GossipMsg::Certificate` (tag 4); `SyncResponse::Accept`
+  gains the accepted ledger, open proposals, and their votes, so a joiner
+  rebuilds governance state over the existing sync response (re-emitted as
+  ordinary `RemoteProposal`/`RemoteCertificate`/`RemoteVote` events after
+  `WorldSync`, re-verified through the client's gates). Join sync is
+  joiner-pulls-only (the host does not pull back).
+- **Client**: an `EpochClock` resource reads the system clock; a
+  `LedgerStore` wraps the persisted ledger. The window evaluator closes
+  each open proposal whose window passed — certifying + gossiping if the
+  roster-filtered tally (connected peers + self) clears quorum (Accepted),
+  else Rejected (ballots cast) / Expired (none). Proposal status is
+  stored (`Open | Accepted | Rejected | Expired`); the HUD counts Open
+  only; the detail view shows a live countdown while open and certificate
+  lines once accepted. Ballots go inert after close.
+- **Trust limits (alpha)**: a malicious certifier can claim a tiny
+  roster — verification is internal-consistency only (real eligibility /
+  anti-Sybil deferred). Certificates for one proposal may differ
+  byte-wise across peers (different rosters); the accepted *set*
+  converges, the bytes need not. Deferred: patch application, rejection
+  certificates, bidirectional ledger reconciliation / forking,
+  announce-then-fetch for large ledgers.
+- Integration tests (`crates/civora-net/tests/sync.rs`):
+  `certificate_gossip_reaches_both_ledgers` (a gossiped certificate lands
+  in both peers' ledgers; a re-seen one is a no-op) and
+  `join_syncs_governance_state` (an accepted entry, an open proposal, and
+  its ballot all ride the join response).
 
 ## Build notes
 
@@ -497,6 +633,44 @@ Things to know that are not obvious from the code:
   (scripted runs, launches without a terminal). There is no passphrase
   recovery — losing it means a new identity. Point `XDG_CONFIG_HOME`
   elsewhere to test with a throwaway identity.
+- **Voting keybinds**: `P` opens/closes the proposal panel (from detail
+  it goes back to the list first), Up/Down + Enter select, `Y`/`N` vote
+  in the detail view (repeat presses flip the vote). F9 publishes a
+  sample proposal; `CIVORA_TEST_PROPOSAL=1` publishes one automatically
+  ~3 s after startup (pair with `CIVORA_SCREENSHOT` for scripted UI
+  checks). Left-click still edits blocks while the panel is open — the
+  cursor stays grabbed by design; the panel is keyboard-only.
+- **Voting windows and epochs**: a proposal's window is open until its
+  `activation_epoch`, where `epoch = unix_secs / EPOCH_SECS` and
+  `EPOCH_SECS` is 30 s. Set `CIVORA_EPOCH_SECS=<secs>` to shrink the
+  window for demos — **it must match on every instance**, or countdowns
+  disagree (certificate verification is clock-free, so validity is never
+  affected). At close, any peer past quorum certifies and gossips; the
+  proposal becomes `accepted`, `rejected` (ballots cast, quorum failed),
+  or `expired` (no ballots). A sample proposal (F9 /
+  `CIVORA_TEST_PROPOSAL`) closes `DEMO_ACTIVATION_EPOCHS` (3) epochs after
+  it is published.
+- **Certificate trust (alpha)**: a certifier snapshots its own
+  connected-peer roster (including itself) and signs it; verifiers check
+  only internal consistency, so a malicious certifier can claim a tiny
+  roster (real eligibility / anti-Sybil is deferred). Min quorum is one
+  ballot, so an offline solo player self-accepts (roster = self) — good
+  for demos. Certificates for one proposal may differ byte-wise across
+  ledgers; the accepted *set* converges, the bytes need not (first valid
+  certificate per proposal wins per ledger).
+- **Accepted-proposal ledger**: `<OS config dir>/civora/genesis-0.ledger`
+  (Linux: `~/.config/civora/genesis-0.ledger`), overridden by
+  `--ledger-file PATH` or `CIVORA_LEDGER_FILE`. Append-only, rewritten
+  atomically on every accepted proposal; a corrupt file is a hard startup
+  error naming the path (never silently dropped). Two instances on one
+  machine need distinct ledgers, same as keys. Join sync now delivers the
+  accepted ledger, open proposals, and their votes to a late joiner
+  (joiner-pulls-only; the host does not pull back).
+- **Gossipsub `max_transmit_size` is raised to 256 KiB**
+  (`MAX_GOSSIP_BYTES` in `crates/civora-net/src/behaviour.rs`): a
+  worst-case encoded proposal is 192 KiB, over the 64 KiB default.
+  Announce-then-fetch by content id replaces this when patch packs
+  arrive.
 - **Dev screenshots**: press F12 in the client, or run with
   `CIVORA_SCREENSHOT=<path> CIVORA_SCREENSHOT_DELAY=<secs>` to auto-save
   one screenshot after startup (used for scripted verification; X11
@@ -508,13 +682,18 @@ Things to know that are not obvious from the code:
 
   ```
   # terminal 1
-  CIVORA_PASSPHRASE=a cargo run -p civora-client -- --host --key-file /tmp/civ-a.key
+  CIVORA_PASSPHRASE=a cargo run -p civora-client -- --host \
+      --key-file /tmp/civ-a.key --ledger-file /tmp/civ-a.ledger
   # prints: listening on /ip4/…/tcp/PORT/p2p/PEERID
   # terminal 2
-  CIVORA_PASSPHRASE=b cargo run -p civora-client -- --join /ip4/127.0.0.1/tcp/PORT/p2p/PEERID --key-file /tmp/civ-b.key
+  CIVORA_PASSPHRASE=b cargo run -p civora-client -- \
+      --join /ip4/127.0.0.1/tcp/PORT/p2p/PEERID \
+      --key-file /tmp/civ-b.key --ledger-file /tmp/civ-b.ledger
   ```
 
-  A bare `--join` (no address) waits for mDNS discovery instead.
+  A bare `--join` (no address) waits for mDNS discovery instead. Each
+  instance also needs its own `--ledger-file` (or `CIVORA_LEDGER_FILE`),
+  the same way it needs its own key.
 - **mDNS is best-effort**: VPNs and multicast-filtering Wi-Fi break it;
   the printed multiaddr + `--join` is the guaranteed path.
 - **Start screen**: launching without lobby flags opens a menu — Host
@@ -531,3 +710,9 @@ Things to know that are not obvious from the code:
   same voxel can briefly diverge worlds. Beacons detect this within ~5 s
   and the yielding peer resyncs automatically. The cell-committee
   milestone replaces this with proper validated ordering.
+- **Content ids before patch packs (M4)**: `civora_governance::Cid` is
+  the raw sha2-256 digest of the addressed bytes — the
+  content-addressed-patch-packs milestone wraps these digests into real
+  CIDv1s without rehashing, so ids minted now stay valid. `Kernel`
+  proposals encode and decode fine but fail `validate()` by design in
+  v1 (kernel changes are not in-game hot patches).

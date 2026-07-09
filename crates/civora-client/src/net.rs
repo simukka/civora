@@ -10,13 +10,17 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use civora_identity::{PlayerId, SignedAction};
-use civora_net::wire::{StateBeacon, snapshot_chunks};
+use civora_net::wire::{
+    MAX_SYNC_LEDGER_ENTRIES, MAX_SYNC_OPEN_PROPOSALS, MAX_SYNC_VOTES, StateBeacon, snapshot_chunks,
+};
 use civora_net::{NetCommand, NetEvent, NetHandle, Snapshot};
 use civora_sim::{ChunkPos, tick};
 
 use crate::identity::{LocalIdentity, SessionLog};
+use crate::ledger::{EpochClock, LedgerStore, apply_certificate};
 use crate::player::Player;
 use crate::sim_bridge::{DirtyChunks, SimWorld, drain_action_queue};
+use crate::voting::{ProposalStatus, ProposalStore};
 
 /// One beacon per 100 fixed ticks = every 5 s at 20 Hz.
 const BEACON_INTERVAL_TICKS: u32 = 100;
@@ -162,6 +166,9 @@ fn pump_net_events(
     mut log: ResMut<SessionLog>,
     mut local: ResMut<LocalIdentity>,
     mut dirty: ResMut<DirtyChunks>,
+    mut store: ResMut<ProposalStore>,
+    mut ledger: ResMut<LedgerStore>,
+    clock: Res<EpochClock>,
     mut player: Single<(&mut Transform, &mut Player)>,
 ) {
     // Drain without holding the lock across the loop body borrows.
@@ -185,13 +192,10 @@ fn pump_net_events(
                 roster.0.retain(|(id, _)| *id != player);
             }
             NetEvent::SnapshotRequested { request_id } => {
+                let snapshot = build_snapshot(&world, &log, &ledger, &store);
                 let _ = channels.commands.send(NetCommand::ProvideSnapshot {
                     request_id,
-                    snapshot: Snapshot {
-                        content_hash: world.0.content_hash(),
-                        log: log.0.entries().to_vec(),
-                        chunks: snapshot_chunks(&world.0),
-                    },
+                    snapshot,
                 });
             }
             NetEvent::WorldSync {
@@ -223,6 +227,29 @@ fn pump_net_events(
                 );
             }
             NetEvent::RemoteAction(signed) => remote.0.push(signed),
+            NetEvent::RemoteProposal(signed) => {
+                let id = signed.proposal_id();
+                match store.insert_proposal(*signed) {
+                    Ok(true) => {
+                        info!("proposal {} received", id.short());
+                        // A certificate may have arrived before its proposal.
+                        if let Some(cert) = store.take_pending_certificate(&id) {
+                            apply_certificate(&mut store, &mut ledger, cert);
+                        }
+                    }
+                    // Gossip redelivery is normal; forged manifests die here.
+                    Ok(false) => debug!("proposal {} already known", id.short()),
+                    Err(err) => debug!("dropped remote proposal: {err}"),
+                }
+            }
+            NetEvent::RemoteVote(signed) => {
+                if let Err(err) = store.insert_vote(signed, clock.now_epoch()) {
+                    debug!("dropped remote vote: {err}");
+                }
+            }
+            NetEvent::RemoteCertificate(signed) => {
+                apply_certificate(&mut store, &mut ledger, *signed);
+            }
             NetEvent::RemoteBeacon { from, beacon } => {
                 check_beacon(&channels, &mut status, &world, &log, &local, from, &beacon);
             }
@@ -237,6 +264,55 @@ fn pump_net_events(
                 roster.0.clear();
             }
         }
+    }
+}
+
+/// Assemble the join-response snapshot: the world and log, plus the governance
+/// state a late joiner needs. Each governance list is truncated to its wire
+/// cap (a warn if it overflows; alpha ledgers are far smaller — announce-then
+/// fetch is the patch-pack milestone).
+fn build_snapshot(
+    world: &SimWorld,
+    log: &SessionLog,
+    ledger: &LedgerStore,
+    store: &ProposalStore,
+) -> Snapshot {
+    let entries = ledger.ledger.entries();
+    if entries.len() > MAX_SYNC_LEDGER_ENTRIES {
+        warn!(
+            "ledger has {} entries; truncating to {MAX_SYNC_LEDGER_ENTRIES} for join sync",
+            entries.len()
+        );
+    }
+    let ledger_payload = entries
+        .iter()
+        .take(MAX_SYNC_LEDGER_ENTRIES)
+        .map(|e| (e.proposal.clone(), e.certificate.clone()))
+        .collect();
+
+    let mut open_proposals = Vec::new();
+    let mut open_votes = Vec::new();
+    for (_, entry) in store.iter() {
+        if entry.status != ProposalStatus::Open {
+            continue;
+        }
+        if open_proposals.len() < MAX_SYNC_OPEN_PROPOSALS {
+            open_proposals.push(entry.signed.clone());
+            for signed in entry.votes.values() {
+                if open_votes.len() < MAX_SYNC_VOTES {
+                    open_votes.push(*signed);
+                }
+            }
+        }
+    }
+
+    Snapshot {
+        content_hash: world.0.content_hash(),
+        log: log.0.entries().to_vec(),
+        chunks: snapshot_chunks(&world.0),
+        ledger: ledger_payload,
+        open_proposals,
+        open_votes,
     }
 }
 

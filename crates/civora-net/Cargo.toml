@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 civora-sim = { path = "../civora-sim" }
 civora-identity = { path = "../civora-identity" }
+civora-governance = { path = "../civora-governance" }
 # TCP + Noise + Yamux keeps the dependency tree smaller than QUIC (no
 # quinn); QUIC can be added later as a second transport without protocol
 # changes. Ed25519 keys let PeerId reuse the player identity key.

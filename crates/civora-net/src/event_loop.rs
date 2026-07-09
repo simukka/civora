@@ -51,7 +51,8 @@ pub async fn run(
 
     let actions_topic = gossipsub::IdentTopic::new(config.cell.actions_topic());
     let state_topic = gossipsub::IdentTopic::new(config.cell.state_topic());
-    for topic in [&actions_topic, &state_topic] {
+    let proposals_topic = gossipsub::IdentTopic::new(config.cell.proposals_topic());
+    for topic in [&actions_topic, &state_topic, &proposals_topic] {
         swarm
             .behaviour_mut()
             .gossipsub
@@ -72,6 +73,7 @@ pub async fn run(
     let mut ctx = EventLoop {
         evt_tx,
         actions_topic,
+        proposals_topic,
         cell: config.cell.clone(),
         live: matches!(config.mode, SessionMode::Host),
         awaiting_join: matches!(config.mode, SessionMode::Join { .. }),
@@ -118,6 +120,7 @@ type SendResult = Result<(), ()>;
 struct EventLoop {
     evt_tx: std::sync::mpsc::Sender<NetEvent>,
     actions_topic: gossipsub::IdentTopic,
+    proposals_topic: gossipsub::IdentTopic,
     cell: wire::CellRef,
     /// Hosts start live; joiners go live after their first `WorldSync`.
     live: bool,
@@ -149,6 +152,21 @@ impl EventLoop {
                 GossipMsg::Beacon(beacon).encode(&mut payload);
                 self.publish(swarm, topic, payload);
             }
+            NetCommand::PublishProposal(signed) => {
+                let mut payload = Vec::new();
+                GossipMsg::Proposal(signed).encode(&mut payload);
+                self.publish(swarm, self.proposals_topic.clone(), payload);
+            }
+            NetCommand::PublishVote(signed) => {
+                let mut payload = Vec::new();
+                GossipMsg::Vote(signed).encode(&mut payload);
+                self.publish(swarm, self.proposals_topic.clone(), payload);
+            }
+            NetCommand::PublishCertificate(signed) => {
+                let mut payload = Vec::new();
+                GossipMsg::Certificate(signed).encode(&mut payload);
+                self.publish(swarm, self.proposals_topic.clone(), payload);
+            }
             NetCommand::ProvideSnapshot {
                 request_id,
                 snapshot,
@@ -162,6 +180,9 @@ impl EventLoop {
                     content_hash: snapshot.content_hash,
                     log: snapshot.log,
                     chunks: snapshot.chunks,
+                    ledger: snapshot.ledger,
+                    open_proposals: snapshot.open_proposals,
+                    open_votes: snapshot.open_votes,
                 };
                 let _ = swarm.behaviour_mut().sync.send_response(channel, response);
             }
@@ -292,6 +313,18 @@ impl EventLoop {
                     self.emit(NetEvent::RemoteBeacon { from, beacon })?;
                 }
             }
+            // Governance gossip bypasses the live gate: unlike actions it
+            // carries no ordering the snapshot could pre-empt, and the
+            // client's store insertion is idempotent.
+            Some(GossipMsg::Proposal(signed)) => {
+                self.emit(NetEvent::RemoteProposal(signed))?;
+            }
+            Some(GossipMsg::Vote(signed)) => {
+                self.emit(NetEvent::RemoteVote(signed))?;
+            }
+            Some(GossipMsg::Certificate(signed)) => {
+                self.emit(NetEvent::RemoteCertificate(signed))?;
+            }
             None => tracing::debug!("dropping malformed gossip message"),
         }
         Ok(())
@@ -368,20 +401,33 @@ impl EventLoop {
     }
 
     fn on_join_response(&mut self, response: SyncResponse) -> SendResult {
-        let (proto, cell, content_hash, log_entries, chunks) = match response {
-            SyncResponse::Reject { reason } => {
-                return self.emit(NetEvent::JoinFailed {
-                    reason: format!("peer rejected join: {reason:?}"),
-                });
-            }
-            SyncResponse::Accept {
-                proto,
-                cell,
-                content_hash,
-                log,
-                chunks,
-            } => (proto, cell, content_hash, log, chunks),
-        };
+        let (proto, cell, content_hash, log_entries, chunks, ledger, open_proposals, open_votes) =
+            match response {
+                SyncResponse::Reject { reason } => {
+                    return self.emit(NetEvent::JoinFailed {
+                        reason: format!("peer rejected join: {reason:?}"),
+                    });
+                }
+                SyncResponse::Accept {
+                    proto,
+                    cell,
+                    content_hash,
+                    log,
+                    chunks,
+                    ledger,
+                    open_proposals,
+                    open_votes,
+                } => (
+                    proto,
+                    cell,
+                    content_hash,
+                    log,
+                    chunks,
+                    ledger,
+                    open_proposals,
+                    open_votes,
+                ),
+            };
 
         if proto != PROTO_VERSION || cell != self.cell {
             return self.emit(NetEvent::JoinFailed {
@@ -417,6 +463,21 @@ impl EventLoop {
             log,
             content_hash,
         })?;
+        // Governance state rides the same response. Re-emit it as ordinary
+        // gossip events, in dependency order, so the client re-verifies each
+        // through its existing gates: a proposal before the certificate that
+        // finalizes it, then open proposals before their ballots. No
+        // verification happens in the net layer (the house split).
+        for (proposal, certificate) in ledger {
+            self.emit(NetEvent::RemoteProposal(Box::new(proposal)))?;
+            self.emit(NetEvent::RemoteCertificate(Box::new(certificate)))?;
+        }
+        for proposal in open_proposals {
+            self.emit(NetEvent::RemoteProposal(Box::new(proposal)))?;
+        }
+        for vote in open_votes {
+            self.emit(NetEvent::RemoteVote(vote))?;
+        }
         // Gossip that raced the snapshot: the client's log seq gate drops
         // whatever the snapshot already contained.
         for signed in std::mem::take(&mut self.buffered) {

@@ -6,11 +6,13 @@ mod debug;
 mod hud;
 mod identity;
 mod interact;
+mod ledger;
 mod menu;
 mod net;
 mod player;
 mod render;
 mod sim_bridge;
+mod voting;
 
 /// Top-level flow: the start screen, then the world. CLI lobby flags skip
 /// the menu entirely (scripted runs, muscle-memory hosts).
@@ -40,6 +42,32 @@ fn main() {
         }
     };
     println!("player id {}", player_identity.player_id());
+
+    // Load the accepted-proposal ledger before the window opens. A corrupt
+    // ledger is a hard error naming the path (keyfile strictness): we never
+    // silently drop accepted history.
+    let ledger_path = match ledger::ledger_path(args.ledger_file) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("civora: {err}");
+            std::process::exit(1);
+        }
+    };
+    let accepted_ledger = match civora_governance::Ledger::load(&ledger_path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!(
+                "civora: cannot load ledger {}: {err}",
+                ledger_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "ledger {} ({} accepted)",
+        ledger_path.display(),
+        accepted_ledger.len()
+    );
 
     // With lobby flags, networking starts before the window opens so the
     // join address prints to a visible terminal and the menu is skipped.
@@ -89,6 +117,11 @@ fn main() {
             next_seq: 0,
         })
         .insert_resource(identity::SessionLog::default())
+        .insert_resource(ledger::EpochClock::from_env())
+        .insert_resource(ledger::LedgerStore {
+            ledger: accepted_ledger,
+            path: ledger_path,
+        })
         .insert_state(initial_state)
         .add_plugins((
             sim_bridge::SimBridgePlugin { start_empty },
@@ -101,6 +134,8 @@ fn main() {
             player::PlayerPlugin,
             interact::InteractPlugin,
             hud::HudPlugin,
+            voting::VotingPlugin,
+            ledger::LedgerPlugin,
             debug::DebugPlugin,
         ))
         .run();

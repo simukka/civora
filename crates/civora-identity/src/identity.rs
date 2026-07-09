@@ -7,7 +7,7 @@ use rand_core::OsRng;
 use crate::signed::{SignedAction, signing_payload};
 
 /// A player's public identity: the raw bytes of their Ed25519 verifying key.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct PlayerId(pub [u8; 32]);
 
 impl PlayerId {
@@ -60,6 +60,15 @@ impl Identity {
 
     pub fn player_id(&self) -> PlayerId {
         PlayerId(self.signing.verifying_key().to_bytes())
+    }
+
+    /// Sign an arbitrary pre-built payload.
+    ///
+    /// The caller must domain-separate the payload (a distinct prefix per
+    /// message type, like [`crate::ACTION_SIGN_DOMAIN`]) so a signature can
+    /// never be replayed as a different message type.
+    pub fn sign_payload(&self, payload: &[u8]) -> [u8; 64] {
+        self.signing.sign(payload).to_bytes()
     }
 
     /// Sign `action` as this player's `seq`-th action.

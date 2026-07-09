@@ -1,0 +1,16 @@
+[package]
+name = "civora-governance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+civora-identity = { path = "../civora-identity" }
+# SHA-256 for proposal ids and placeholder content ids; already in the
+# workspace dependency tree via the Ed25519 stack. Real content addressing
+# (CIDv1 wrapping of these digests) arrives with the patch-pack milestone.
+sha2 = "0.10"
+
+[dev-dependencies]
+# Temp directories for ledger persistence round-trip tests.
+tempfile = "3"

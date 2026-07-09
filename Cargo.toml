@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/civora-sim",
     "crates/civora-identity",
+    "crates/civora-governance",
     "crates/civora-net",
     "crates/civora-client",
 ]

@@ -14,4 +14,4 @@ mod signed;
 pub use identity::{Identity, PlayerId};
 pub use keyfile::{KeyfileError, load_encrypted, save_encrypted};
 pub use log::ActionLog;
-pub use signed::{ACTION_SIGN_DOMAIN, SignedAction, VerifyError};
+pub use signed::{ACTION_SIGN_DOMAIN, SignedAction, VerifyError, verify_payload};
