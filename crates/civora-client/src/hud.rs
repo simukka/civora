@@ -132,6 +132,7 @@ fn update_debug_text(
     net: Res<crate::net::NetStatus>,
     roster: Res<crate::net::PeerRoster>,
     store: Res<crate::voting::ProposalStore>,
+    packs: Res<crate::packs::PackTracker>,
     mut text: Single<&mut Text, With<DebugText>>,
 ) {
     let (player, transform) = *player;
@@ -183,6 +184,10 @@ fn update_debug_text(
     }
 
     let _ = writeln!(text, "proposals: {} open (P)", store.open_count());
+    if !packs.is_empty() {
+        let (complete, syncing) = packs.counts();
+        let _ = writeln!(text, "packs: {complete} complete, {syncing} syncing");
+    }
 
     let _ = writeln!(text, "click to grab cursor, Esc to release");
 }

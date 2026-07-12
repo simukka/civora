@@ -16,7 +16,7 @@ mod event_loop;
 pub mod peer;
 pub mod wire;
 
-use civora_governance::{SignedCertificate, SignedProposal, SignedVote};
+use civora_governance::{Cid, SignedCertificate, SignedProposal, SignedVote};
 use civora_identity::{ActionLog, PlayerId, SignedAction};
 use civora_sim::{ChunkPos, VoxelWorld};
 
@@ -82,6 +82,17 @@ pub enum NetCommand {
     PublishCertificate(Box<SignedCertificate>),
     /// Answer a [`NetEvent::SnapshotRequested`].
     ProvideSnapshot { request_id: u64, snapshot: Snapshot },
+    /// Fetch a content-addressed blob from a connected peer, retrying across
+    /// peers on failure. Resolves to [`NetEvent::BlobFetched`] or
+    /// [`NetEvent::BlobFetchFailed`]. A duplicate request for a cid already
+    /// in flight is dropped.
+    FetchBlob { cid: Cid },
+    /// Answer a [`NetEvent::BlobRequested`]: `Some(bytes)` serves the blob,
+    /// `None` (or bytes over the cap) answers not-found.
+    ProvideBlob {
+        request_id: u64,
+        bytes: Option<Vec<u8>>,
+    },
     /// Re-run the join flow (divergence recovery), preferably against
     /// `preferred` if it is still connected.
     Resync { preferred: Option<PlayerId> },
@@ -106,6 +117,26 @@ pub enum NetEvent {
     /// [`NetCommand::ProvideSnapshot`] using the same `request_id`.
     SnapshotRequested {
         request_id: u64,
+    },
+    /// A peer asked us for a blob; reply with [`NetCommand::ProvideBlob`] using
+    /// the same `request_id`. Delivered whether or not we have gone live — the
+    /// content store exists independently of world sync.
+    BlobRequested {
+        request_id: u64,
+        cid: Cid,
+    },
+    /// A [`NetCommand::FetchBlob`] succeeded. `bytes` already hash to `cid` —
+    /// the net layer verified that before emitting (the same house split as the
+    /// join snapshot's content-hash check).
+    BlobFetched {
+        cid: Cid,
+        bytes: Vec<u8>,
+    },
+    /// A [`NetCommand::FetchBlob`] failed after exhausting connected peers (none
+    /// had it, or every candidate errored). `reason` is the last failure seen.
+    BlobFetchFailed {
+        cid: Cid,
+        reason: String,
     },
     /// Join (or resync) succeeded: replace local state with this verified
     /// world and log. `world.content_hash()` already matched

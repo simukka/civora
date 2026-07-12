@@ -324,6 +324,33 @@ impl Proposal {
         }
     }
 
+    /// Every content id this proposal references, deduplicated and sorted
+    /// ascending: the fetch list a peer resolves after the proposal is accepted.
+    ///
+    /// Covers all eight cid sources — source bundle, build manifest, wasm
+    /// modules, assets, migrations, the governance rule module, test results,
+    /// and any reverse-migration cids in the rollback plan. `git_commit_hash` is
+    /// provenance, not content, so it is not fetched.
+    pub fn referenced_cids(&self) -> Vec<Cid> {
+        let mut cids: std::collections::BTreeSet<Cid> = std::collections::BTreeSet::new();
+        cids.insert(self.source_bundle_cid);
+        cids.insert(self.build_manifest_cid);
+        cids.insert(self.test_results_cid);
+        cids.extend(&self.wasm_module_cids);
+        cids.extend(&self.asset_cids);
+        cids.extend(&self.migration_cids);
+        if let Some(change) = &self.governance_change {
+            cids.insert(change.rule_module_cid);
+        }
+        if let RollbackPlan::ReverseMigrations {
+            reverse_migration_cids,
+        } = &self.rollback_plan
+        {
+            cids.extend(reverse_migration_cids);
+        }
+        cids.into_iter().collect()
+    }
+
     /// The content-derived id of this proposal: SHA-256 over
     /// `PROPOSAL_ID_DOMAIN || encode()`.
     pub fn id(&self) -> ProposalId {
@@ -424,3 +451,41 @@ impl fmt::Display for ValidationError {
 }
 
 impl std::error::Error for ValidationError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn referenced_cids_dedups_covers_all_sources_and_sorts() {
+        // A shared cid appears in two lists; the governance rule and reverse
+        // migrations are both present. `test_results_cid` deliberately equals a
+        // wasm cid to prove cross-source dedup.
+        let shared = Cid([7; 32]);
+        let proposal = Proposal {
+            kind: ProposalKind::Governance,
+            author_public_key: PlayerId([0; 32]),
+            git_commit_hash: [0xAB; 20],
+            source_bundle_cid: Cid([1; 32]),
+            build_manifest_cid: Cid([2; 32]),
+            wasm_module_cids: vec![Cid([3; 32]), shared],
+            asset_cids: vec![Cid([4; 32]), shared],
+            migration_cids: vec![Cid([5; 32])],
+            governance_change: Some(GovernanceChange {
+                rule_module_cid: Cid([6; 32]),
+            }),
+            test_results_cid: shared,
+            activation_epoch: 0,
+            rollback_plan: RollbackPlan::ReverseMigrations {
+                reverse_migration_cids: vec![Cid([8; 32])],
+            },
+        };
+
+        let cids = proposal.referenced_cids();
+        // git_commit_hash is not a cid, so 8 distinct cids: 1..=8.
+        let expected: Vec<Cid> = (1u8..=8).map(|b| Cid([b; 32])).collect();
+        assert_eq!(cids, expected);
+        // Ascending and duplicate-free.
+        assert!(cids.windows(2).all(|w| w[0] < w[1]));
+    }
+}

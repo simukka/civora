@@ -13,12 +13,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
 use civora_governance::{
-    EPOCH_SECS, Ledger, LedgerEntry, LedgerError, LedgerFileError, SignedCertificate, epoch_at,
+    EPOCH_SECS, Ledger, LedgerEntry, LedgerError, LedgerFileError, Proposal, SignedCertificate,
+    epoch_at,
 };
 
 use crate::AppState;
 use crate::identity::LocalIdentity;
 use crate::net::{NetChannels, PeerRoster};
+use crate::packs::{ContentStore, PackTracker, track_pack};
 use crate::voting::{ProposalStatus, ProposalStore};
 
 /// Dev knob: override the voting-window length in seconds. Must be set
@@ -142,17 +144,20 @@ pub fn ledger_path(overridden: Option<PathBuf>) -> Result<PathBuf, String> {
 /// verification), and on success mark the proposal Accepted. A certificate
 /// whose proposal has not arrived yet is parked in the store until it does.
 ///
-/// Returns `true` if the certificate newly accepted a proposal.
+/// Returns the accepted [`Proposal`] when the certificate finalized it (whether
+/// newly appended or already known), so the caller can track its patch pack;
+/// `None` when the certificate was parked or rejected.
 pub fn apply_certificate(
     store: &mut ProposalStore,
     ledger: &mut LedgerStore,
     certificate: SignedCertificate,
-) -> bool {
+) -> Option<Proposal> {
     let id = certificate.certificate.proposal_id;
     let Some(signed) = store.signed_proposal(&id) else {
         store.park_certificate(certificate);
-        return false;
+        return None;
     };
+    let proposal = signed.proposal.clone();
     let entry = LedgerEntry {
         proposal: signed,
         certificate,
@@ -167,20 +172,34 @@ pub fn apply_certificate(
             } else {
                 debug!("proposal {} already accepted", id.short());
             }
-            true
+            Some(proposal)
         }
         Err(err) => {
             debug!("dropped certificate for {}: {err}", id.short());
-            false
+            None
         }
     }
 }
 
-/// Seed the store from the persisted ledger on entering the game, so accepted
-/// history is visible immediately (before any gossip).
-fn seed_accepted_from_ledger(mut store: ResMut<ProposalStore>, ledger: Res<LedgerStore>) {
+/// Seed the store and pack tracker from the persisted ledger on entering the
+/// game, so accepted history is visible immediately and its content resolves
+/// (before any gossip).
+fn seed_accepted_from_ledger(
+    mut store: ResMut<ProposalStore>,
+    mut tracker: ResMut<PackTracker>,
+    ledger: Res<LedgerStore>,
+    content: Res<ContentStore>,
+    channels: Option<Res<NetChannels>>,
+) {
     for entry in ledger.ledger.entries() {
         store.insert_accepted(entry.proposal.clone());
+        track_pack(
+            &mut tracker,
+            &content.0,
+            channels.as_deref(),
+            entry.proposal.proposal_id(),
+            &entry.proposal.proposal,
+        );
     }
 }
 
@@ -192,6 +211,8 @@ fn seed_accepted_from_ledger(mut store: ResMut<ProposalStore>, ledger: Res<Ledge
 fn evaluate_voting_windows(
     mut store: ResMut<ProposalStore>,
     mut ledger: ResMut<LedgerStore>,
+    mut tracker: ResMut<PackTracker>,
+    content: Res<ContentStore>,
     clock: Res<EpochClock>,
     roster: Res<PeerRoster>,
     local: Res<LocalIdentity>,
@@ -246,6 +267,9 @@ fn evaluate_voting_windows(
                                 .commands
                                 .send(civora_net::NetCommand::PublishCertificate(Box::new(cert)));
                         }
+                        // Resolve the accepted proposal's content (local already
+                        // for our own; a fetch for anything we lack).
+                        track_pack(&mut tracker, &content.0, channels.as_deref(), id, &proposal);
                         info!("proposal {} accepted at epoch {now_epoch}", id.short());
                     }
                     Err(err) => warn!("could not accept {}: {err}", id.short()),
@@ -339,7 +363,7 @@ mod tests {
 
         let mut ledger = store_at(dir.path());
         let cert = solo_certificate(&author, id, &proposal);
-        assert!(apply_certificate(&mut store, &mut ledger, cert));
+        assert!(apply_certificate(&mut store, &mut ledger, cert).is_some());
 
         assert_eq!(store.get(&id).unwrap().status, ProposalStatus::Accepted);
         assert!(ledger.ledger.contains(&id));
@@ -360,7 +384,7 @@ mod tests {
 
         // Certificate arrives first: parked, nothing accepted yet.
         let cert = solo_certificate(&author, id, &proposal);
-        assert!(!apply_certificate(&mut store, &mut ledger, cert));
+        assert!(apply_certificate(&mut store, &mut ledger, cert).is_none());
         assert!(!ledger.ledger.contains(&id));
 
         // Proposal arrives; draining the parked certificate accepts it.
@@ -368,7 +392,7 @@ mod tests {
         let parked = store
             .take_pending_certificate(&id)
             .expect("cert was parked");
-        assert!(apply_certificate(&mut store, &mut ledger, parked));
+        assert!(apply_certificate(&mut store, &mut ledger, parked).is_some());
         assert_eq!(store.get(&id).unwrap().status, ProposalStatus::Accepted);
         assert!(ledger.ledger.contains(&id));
     }

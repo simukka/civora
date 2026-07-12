@@ -23,6 +23,7 @@ use crate::AppState;
 use crate::identity::LocalIdentity;
 use crate::ledger::{EpochClock, LedgerStore};
 use crate::net::NetChannels;
+use crate::packs::{MAX_DETAIL_BLOB_ROWS, PackStatus, PackTracker};
 
 /// Cap on votes held for proposals we have not seen yet (gossip can deliver
 /// a vote before its proposal). Guards memory only.
@@ -445,12 +446,14 @@ fn sync_voting_panel(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_voting_panel_text(
     ui: Res<VotingUi>,
     store: Res<ProposalStore>,
     local: Res<LocalIdentity>,
     clock: Res<EpochClock>,
     ledger: Res<LedgerStore>,
+    tracker: Res<PackTracker>,
     mut panel: Query<&mut Text, With<VotingPanelText>>,
 ) {
     let Ok(mut text) = panel.single_mut() else {
@@ -462,17 +465,24 @@ fn update_voting_panel_text(
     // ASCII only: the default font has no em-dash glyph.
     match *ui {
         VotingUi::Closed => {}
-        VotingUi::List { cursor } => write_list(text, &store, cursor),
+        VotingUi::List { cursor } => write_list(text, &store, &tracker, cursor),
         VotingUi::Detail { id } => match store.get(&id) {
-            Some(entry) => write_detail(text, entry, local.identity.player_id(), &clock, &ledger),
+            Some(entry) => write_detail(
+                text,
+                entry,
+                local.identity.player_id(),
+                &clock,
+                &ledger,
+                tracker.get(&id),
+            ),
             // The id vanished (cannot happen in this milestone: proposals
             // are never removed) — fall back to the list rendering.
-            None => write_list(text, &store, 0),
+            None => write_list(text, &store, &tracker, 0),
         },
     }
 }
 
-fn write_list(text: &mut String, store: &ProposalStore, cursor: usize) {
+fn write_list(text: &mut String, store: &ProposalStore, tracker: &PackTracker, cursor: usize) {
     let _ = writeln!(text, "PROPOSALS ({} open)", store.open_count());
     let _ = writeln!(text);
     if store.is_empty() {
@@ -481,7 +491,7 @@ fn write_list(text: &mut String, store: &ProposalStore, cursor: usize) {
     for (row, (id, entry)) in store.iter().enumerate() {
         let marker = if row == cursor { ">" } else { " " };
         let (yes, no) = entry.tally();
-        let _ = writeln!(
+        let _ = write!(
             text,
             "{marker} {}. [{}] {} {:?} by {}  yes {yes} / no {no}",
             row + 1,
@@ -490,6 +500,13 @@ fn write_list(text: &mut String, store: &ProposalStore, cursor: usize) {
             entry.signed.proposal.kind,
             entry.signed.proposal.author_public_key.short(),
         );
+        // Accepted proposals show their patch-pack fetch progress.
+        if entry.status == ProposalStatus::Accepted
+            && let Some(pack) = tracker.get(id)
+        {
+            let _ = write!(text, " pack {}/{}", pack.local(), pack.total());
+        }
+        let _ = writeln!(text);
     }
     let _ = writeln!(text);
     let _ = writeln!(text, "Up/Down select  Enter details  P close");
@@ -501,6 +518,7 @@ fn write_detail(
     me: PlayerId,
     clock: &EpochClock,
     ledger: &LedgerStore,
+    pack: Option<&PackStatus>,
 ) {
     let proposal: &Proposal = &entry.signed.proposal;
     let id = entry.signed.proposal_id();
@@ -586,6 +604,44 @@ fn write_detail(
             "rule ver   {}",
             cert.certificate.governance_rule_version
         );
+    }
+
+    // Patch pack: the accepted proposal's content-addressed artifacts, and how
+    // far each has resolved into the local store. This is the CIDv1 surface.
+    if entry.status == ProposalStatus::Accepted
+        && let Some(pack) = pack
+    {
+        let _ = writeln!(text);
+        let _ = writeln!(text, "PACK");
+        if pack.complete() {
+            let _ = writeln!(
+                text,
+                "content    {}/{} blobs local - complete",
+                pack.local(),
+                pack.total()
+            );
+        } else {
+            let _ = writeln!(
+                text,
+                "content    {}/{} blobs local (fetching {}, failed {})",
+                pack.local(),
+                pack.total(),
+                pack.fetching(),
+                pack.failed()
+            );
+        }
+        for cid in pack.cids.iter().take(MAX_DETAIL_BLOB_ROWS) {
+            let _ = writeln!(
+                text,
+                "  {} [{}]",
+                cid.to_cid_string(),
+                pack.state_of(cid).tag()
+            );
+        }
+        let extra = pack.cids.len().saturating_sub(MAX_DETAIL_BLOB_ROWS);
+        if extra > 0 {
+            let _ = writeln!(text, "  + {extra} more");
+        }
     }
 
     let mine = match entry.votes.get(&me).map(|sv| sv.vote.choice) {

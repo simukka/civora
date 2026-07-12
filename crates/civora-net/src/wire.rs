@@ -5,7 +5,7 @@
 //! trailing bytes, and non-canonical orderings, so decode(encode(m))
 //! round-trips and nothing else parses.
 
-use civora_governance::{SignedCertificate, SignedProposal, SignedVote};
+use civora_governance::{Cid, MAX_BLOB_BYTES, SignedCertificate, SignedProposal, SignedVote};
 use civora_identity::{PlayerId, SignedAction};
 use civora_sim::{CHUNK_SIZE, Chunk, ChunkPos, VoxelWorld};
 
@@ -33,6 +33,15 @@ pub const MAX_SYNC_VOTES: usize = 8192;
 
 /// Bytes in one transferred chunk payload ([`Chunk::block_bytes`] order).
 pub const CHUNK_BYTES: usize = (CHUNK_SIZE as usize).pow(3);
+
+/// Cap on an encoded [`FetchRequest`]: a tag byte plus a 32-byte cid = 33, with
+/// slack. The fetch protocol has its own caps so the 64 MiB sync cap never
+/// applies to it.
+pub const MAX_FETCH_REQUEST_BYTES: usize = 64;
+
+/// Cap on an encoded [`FetchResponse`]: one blob at [`MAX_BLOB_BYTES`] plus the
+/// tag and length framing.
+pub const MAX_FETCH_RESPONSE_BYTES: usize = MAX_BLOB_BYTES + 16;
 
 fn take(bytes: &[u8], n: usize) -> Option<(&[u8], &[u8])> {
     (bytes.len() >= n).then(|| bytes.split_at(n))
@@ -473,6 +482,85 @@ impl SyncResponse {
     }
 }
 
+/// Request on the `/civora/fetch/1` content-fetch protocol. One blob per
+/// request; pipelining is multiple in-flight requests.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum FetchRequest {
+    /// Ask a peer for the blob with this content id.
+    Blob { cid: Cid },
+}
+
+impl FetchRequest {
+    /// `0x00 || cid (32)`.
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            FetchRequest::Blob { cid } => {
+                out.push(0);
+                out.extend_from_slice(&cid.0);
+            }
+        }
+    }
+
+    /// Decode exactly one request, rejecting unknown tags and trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Option<FetchRequest> {
+        let (&tag, rest) = bytes.split_first()?;
+        match tag {
+            0 => {
+                let (cid, rest) = take(rest, 32)?;
+                rest.is_empty().then(|| FetchRequest::Blob {
+                    cid: Cid(cid.try_into().unwrap()),
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Response on the `/civora/fetch/1` protocol.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum FetchResponse {
+    /// The requested blob's raw bytes. The receiver still checks they hash to
+    /// the requested cid before trusting them.
+    Blob { bytes: Vec<u8> },
+    /// The peer does not hold the requested blob.
+    NotFound,
+}
+
+impl FetchResponse {
+    /// `0x00 || len (u32 LE) || bytes`, or `0x01` for `NotFound`.
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            FetchResponse::Blob { bytes } => {
+                debug_assert!(bytes.len() <= MAX_BLOB_BYTES, "blob over cap");
+                out.push(0);
+                out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                out.extend_from_slice(bytes);
+            }
+            FetchResponse::NotFound => out.push(1),
+        }
+    }
+
+    /// Decode exactly one response, rejecting over-cap lengths, unknown tags,
+    /// and trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Option<FetchResponse> {
+        let (&tag, rest) = bytes.split_first()?;
+        match tag {
+            0 => {
+                let (len, rest) = u32_le(rest)?;
+                if len as usize > MAX_BLOB_BYTES {
+                    return None;
+                }
+                let (blob, rest) = take(rest, len as usize)?;
+                rest.is_empty().then(|| FetchResponse::Blob {
+                    bytes: blob.to_vec(),
+                })
+            }
+            1 => rest.is_empty().then_some(FetchResponse::NotFound),
+            _ => None,
+        }
+    }
+}
+
 /// Extract a world's chunks in canonical snapshot order: sorted by
 /// [`ChunkPos`], fully-empty chunks omitted (matching `content_hash`).
 pub fn snapshot_chunks(world: &VoxelWorld) -> Vec<(ChunkPos, Vec<u8>)> {
@@ -838,5 +926,59 @@ mod tests {
             bytes[at..at + 4].copy_from_slice(&over.to_le_bytes());
             assert_eq!(SyncResponse::decode(&bytes), None, "cap at -{from_end}");
         }
+    }
+
+    #[test]
+    fn fetch_request_round_trips_and_fits_the_cap() {
+        let req = FetchRequest::Blob {
+            cid: Cid::of(b"some artifact"),
+        };
+        let mut bytes = Vec::new();
+        req.encode(&mut bytes);
+        assert_eq!(bytes.len(), 33);
+        assert!(bytes.len() <= MAX_FETCH_REQUEST_BYTES);
+        assert_eq!(FetchRequest::decode(&bytes), Some(req));
+
+        for len in 0..bytes.len() {
+            assert_eq!(FetchRequest::decode(&bytes[..len]), None);
+        }
+        bytes.push(0);
+        assert_eq!(FetchRequest::decode(&bytes), None); // trailing byte
+        bytes.truncate(33);
+        bytes[0] = 0xff;
+        assert_eq!(FetchRequest::decode(&bytes), None); // unknown tag
+    }
+
+    #[test]
+    fn fetch_response_round_trips_including_empty_and_not_found() {
+        for resp in [
+            FetchResponse::Blob { bytes: vec![] },
+            FetchResponse::Blob {
+                bytes: vec![0xAB; 4096],
+            },
+            FetchResponse::NotFound,
+        ] {
+            let mut bytes = Vec::new();
+            resp.encode(&mut bytes);
+            assert_eq!(FetchResponse::decode(&bytes), Some(resp));
+
+            for len in 0..bytes.len() {
+                assert_eq!(FetchResponse::decode(&bytes[..len]), None);
+            }
+            bytes.push(0);
+            assert_eq!(FetchResponse::decode(&bytes), None); // trailing byte
+        }
+    }
+
+    #[test]
+    fn fetch_response_rejects_over_cap_length() {
+        // A Blob header claiming more than MAX_BLOB_BYTES is refused before any
+        // allocation, whatever bytes follow.
+        let mut bytes = vec![0u8]; // Blob tag
+        bytes.extend_from_slice(&((MAX_BLOB_BYTES as u32) + 1).to_le_bytes());
+        assert_eq!(FetchResponse::decode(&bytes), None);
+
+        // Unknown tag.
+        assert_eq!(FetchResponse::decode(&[0x07]), None);
     }
 }

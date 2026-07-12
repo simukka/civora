@@ -380,9 +380,9 @@ Build in this exact order:
 - [x] Proposal manifest format (plans/create-a-plan-for-imperative-dijkstra.md) *(done 2026-07-06)*
 - [x] Voting UI (plans/approve-a-plan-for-imperative-dijkstra.md) *(done 2026-07-08)*
 - [x] Accepted proposal ledger (plans/accepted-proposal-ledger.md) *(done 2026-07-09)*
-- [ ] Content-addressed patch packs (plans/patch-packs.md)
+- [x] Content-addressed patch packs (plans/patch-packs.md) *(done 2026-07-12)*
 - [ ] Wasm plugin ABI (plans/wasm-abi.md)
-- [ ] Asset hot patch
+- [ ] Asset hot patch (plans/asset-hot-patch.md)
 - [ ] Gameplay Wasm hot patch
 - [ ] Portal to second realm
 - [ ] Governance-rule patching
@@ -609,6 +609,60 @@ a ledger entry plus UI status until content-addressed patch packs.
   `join_syncs_governance_state` (an accepted entry, an open proposal, and
   its ballot all ride the join response).
 
+### Milestone 7: content-addressed patch packs (done 2026-07-12)
+
+Accepted proposals' content becomes real: every artifact a manifest
+references now lands, hash-verified, in each peer's local
+content-addressed store, fetched over a new `/civora/fetch/1` protocol
+**after acceptance**. **Nothing is loaded or applied** — content lands on
+disk and stops there until the wasm ABI (M8) and asset hot patch (M9).
+
+- **CIDv1 text form** (`cid.rs`): `Cid` stays a 32-byte digest in every
+  wire and persisted encoding; `to_cid_string()`/`from_cid_string()` add a
+  presentation-only CIDv1 (`'b' + base32(0x01 0x55 0x12 0x20 || digest)`,
+  raw codec + sha2-256, 59 chars, hand-rolled base32, no new dependency).
+  `Display` stays hex. A golden vector pins `Cid::of(b"")` to the
+  well-known IPFS empty-block CID as an external cross-check.
+- **Blob store** (`store.rs`): git-style `root/<hex[0..2]>/<hex64>`, file
+  content = the raw blob. `put` is idempotent (temp file + atomic rename,
+  pid-suffixed for shared-store safety); `get` re-hashes on read
+  (mismatch → `Corrupt`). **Blob files carry no magic prefix** — a
+  deliberate deviation: the filename *is* `sha256(content)`, so
+  `sha256sum <file>` equals the name, and a prefix would break that. Public
+  data, default permissions. Per-blob cap `MAX_BLOB_BYTES = 16 MiB`; no
+  total-pack cap in v1.
+- **Fetch protocol** (`/civora/fetch/1`, additive — **no `PROTO_VERSION`
+  bump**): a second request-response behaviour with independent caps
+  (`FetchRequest::Blob`/`FetchResponse::{Blob,NotFound}`), one blob per
+  request. The event loop verifies bytes-hash-to-cid (the net layer owns
+  content-hash checks); a mismatch is treated like not-found and retries
+  the next connected peer. Serving round-trips through the client
+  (`BlobRequested` → `ProvideBlob`) like snapshots.
+- **Pack tracker** (client `packs.rs`): `track_pack` is the single
+  accept-time choke point — local certification, remote certificates
+  (join-synced included), and startup ledger seeding all call it. It splits
+  a proposal's `referenced_cids()` into local vs. missing and fires a
+  `FetchBlob` per missing cid; a 10 s `retry_missing_blobs` timer
+  re-requests anything still missing (failures decay back into
+  eligibility) while peers exist. A fetched blob clears from every pack
+  that wanted it.
+- **UI**: accepted list rows show ` pack n/m`; the detail view shows
+  `n/m blobs local` plus up to 8 per-blob rows with the full 59-char CIDv1
+  and a `[local|fetching|failed]` tag (the CIDv1 surface); the HUD shows
+  `packs: X complete, Y syncing`.
+- **Demo**: the F9 sample now `put`s five real blobs (source/build/tests
+  text + two binary assets) and references their cids, so an accepted
+  sample resolves its pack for real. `CIVORA_TEST_VOTE=1` auto-votes yes on
+  every open proposal (the joiner side of a scripted run).
+- **Accepted limits**: directly-connected peers only, serial with retry
+  (no DHT/bitswap/resume); no total-pack cap, pinning, or GC (the store
+  grows monotonically); any connected peer can fetch any blob (content is
+  public by design); a corrupt store file serves as warn + not-found
+  (healing is manual deletion).
+- Integration tests (`crates/civora-net/tests/sync.rs`):
+  `blob_fetch_round_trips`, `blob_fetch_not_found_fails_cleanly`,
+  `blob_fetch_rejects_hash_mismatch`, and `fetch_retries_across_peers`.
+
 ## Build notes
 
 Things to know that are not obvious from the code:
@@ -669,8 +723,9 @@ Things to know that are not obvious from the code:
 - **Gossipsub `max_transmit_size` is raised to 256 KiB**
   (`MAX_GOSSIP_BYTES` in `crates/civora-net/src/behaviour.rs`): a
   worst-case encoded proposal is 192 KiB, over the 64 KiB default.
-  Announce-then-fetch by content id replaces this when patch packs
-  arrive.
+  Manifests keep gossiping whole; the artifacts they reference travel
+  separately over `/civora/fetch/1` after acceptance (M7).
+  Announce-then-fetch of the manifests themselves is still deferred.
 - **Dev screenshots**: press F12 in the client, or run with
   `CIVORA_SCREENSHOT=<path> CIVORA_SCREENSHOT_DELAY=<secs>` to auto-save
   one screenshot after startup (used for scripted verification; X11
@@ -683,17 +738,21 @@ Things to know that are not obvious from the code:
   ```
   # terminal 1
   CIVORA_PASSPHRASE=a cargo run -p civora-client -- --host \
-      --key-file /tmp/civ-a.key --ledger-file /tmp/civ-a.ledger
+      --key-file /tmp/civ-a.key --ledger-file /tmp/civ-a.ledger \
+      --store-dir /tmp/civ-a-store
   # prints: listening on /ip4/…/tcp/PORT/p2p/PEERID
   # terminal 2
   CIVORA_PASSPHRASE=b cargo run -p civora-client -- \
       --join /ip4/127.0.0.1/tcp/PORT/p2p/PEERID \
-      --key-file /tmp/civ-b.key --ledger-file /tmp/civ-b.ledger
+      --key-file /tmp/civ-b.key --ledger-file /tmp/civ-b.ledger \
+      --store-dir /tmp/civ-b-store
   ```
 
   A bare `--join` (no address) waits for mDNS discovery instead. Each
-  instance also needs its own `--ledger-file` (or `CIVORA_LEDGER_FILE`),
-  the same way it needs its own key.
+  instance also needs its own `--ledger-file` (or `CIVORA_LEDGER_FILE`) and
+  its own `--store-dir` (or `CIVORA_STORE_DIR`), the same way it needs its
+  own key — otherwise the two instances share a blob store and the fetch
+  path is never exercised.
 - **mDNS is best-effort**: VPNs and multicast-filtering Wi-Fi break it;
   the printed multiaddr + `--join` is the guaranteed path.
 - **Start screen**: launching without lobby flags opens a menu — Host
@@ -710,9 +769,22 @@ Things to know that are not obvious from the code:
   same voxel can briefly diverge worlds. Beacons detect this within ~5 s
   and the yielding peer resyncs automatically. The cell-committee
   milestone replaces this with proper validated ordering.
-- **Content ids before patch packs (M4)**: `civora_governance::Cid` is
-  the raw sha2-256 digest of the addressed bytes — the
-  content-addressed-patch-packs milestone wraps these digests into real
-  CIDv1s without rehashing, so ids minted now stay valid. `Kernel`
-  proposals encode and decode fine but fail `validate()` by design in
-  v1 (kernel changes are not in-game hot patches).
+- **Content ids (M4/M7)**: `civora_governance::Cid` is the raw sha2-256
+  digest of the addressed bytes and stays 32 bytes in every wire and
+  persisted encoding. Patch packs (M7) added a presentation-only CIDv1
+  text form (`Cid::to_cid_string`, shown in the pack UI) that wraps the
+  same digest without rehashing — the digest remains the wire form.
+  `Kernel` proposals encode and decode fine but fail `validate()` by
+  design in v1 (kernel changes are not in-game hot patches).
+- **Content-addressed blob store (M7)**: `<OS config dir>/civora/store`
+  (Linux: `~/.config/civora/store`), overridden by `--store-dir PATH` or
+  `CIVORA_STORE_DIR`. Git-style `<hex[0..2]>/<hex64>` layout, each file's
+  content hashing to its own name (`sha256sum <file>` == the filename); a
+  bad path is a hard startup error naming it. **Two instances on one
+  machine need distinct store dirs**, same as keys and ledgers — otherwise
+  the fetch demo proves nothing. Per-blob cap is 16 MiB; the store grows
+  monotonically (no GC). After a proposal is accepted, its referenced
+  artifacts are fetched from connected peers over `/civora/fetch/1`; a
+  10 s timer retries anything still missing. `CIVORA_TEST_VOTE=1` auto-votes
+  yes on every open proposal (pair with a host running
+  `CIVORA_TEST_PROPOSAL=1` for a scripted two-instance fetch demo).

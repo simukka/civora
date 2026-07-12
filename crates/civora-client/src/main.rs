@@ -9,6 +9,7 @@ mod interact;
 mod ledger;
 mod menu;
 mod net;
+mod packs;
 mod player;
 mod render;
 mod sim_bridge;
@@ -69,6 +70,21 @@ fn main() {
         accepted_ledger.len()
     );
 
+    // Open the content-addressed blob store before the window opens (a bad path
+    // is a hard error naming it, like the ledger). Present in every session:
+    // even an offline F9 demo puts blobs into it.
+    let content_store = match packs::store_dir(args.store_dir).and_then(|dir| {
+        civora_governance::BlobStore::open(dir.clone())
+            .map_err(|err| format!("cannot open blob store {}: {err}", dir.display()))
+    }) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("civora: {err}");
+            std::process::exit(1);
+        }
+    };
+    println!("content store at {}", content_store.root().display());
+
     // With lobby flags, networking starts before the window opens so the
     // join address prints to a visible terminal and the menu is skipped.
     // Without flags the start screen decides, and the net thread (if any)
@@ -122,6 +138,7 @@ fn main() {
             ledger: accepted_ledger,
             path: ledger_path,
         })
+        .insert_resource(packs::ContentStore(content_store))
         .insert_state(initial_state)
         .add_plugins((
             sim_bridge::SimBridgePlugin { start_empty },
@@ -136,6 +153,7 @@ fn main() {
             hud::HudPlugin,
             voting::VotingPlugin,
             ledger::LedgerPlugin,
+            packs::PacksPlugin,
             debug::DebugPlugin,
         ))
         .run();

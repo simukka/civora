@@ -14,6 +14,7 @@ mod epoch;
 mod ledger;
 mod proposal;
 mod signed;
+mod store;
 mod vote;
 
 pub use certificate::{
@@ -21,7 +22,7 @@ pub use certificate::{
     GENESIS_RULE_VERSION, MAX_CERTIFICATE_BYTES, MAX_ROSTER_PLAYERS, MIN_QUORUM_BALLOTS,
     QuorumResult, ROSTER_ROOT_DOMAIN, SignedCertificate, VotePair, quorum_passes,
 };
-pub use cid::Cid;
+pub use cid::{CID_STRING_LEN, CIDV1_RAW_SHA256_PREFIX, Cid};
 pub use epoch::{EPOCH_SECS, epoch_at};
 pub use ledger::{LEDGER_MAGIC, Ledger, LedgerEntry, LedgerError, LedgerFileError};
 pub use proposal::{
@@ -29,6 +30,7 @@ pub use proposal::{
     PROPOSAL_ID_DOMAIN, Proposal, ProposalId, ProposalKind, RollbackPlan, ValidationError,
 };
 pub use signed::{PROPOSAL_SIGN_DOMAIN, SignedProposal};
+pub use store::{BlobStore, BlobStoreError, MAX_BLOB_BYTES};
 pub use vote::{
     MAX_SIGNED_VOTE_BYTES, SignedVote, VOTE_BYTES, VOTE_FORMAT_VERSION, VOTE_SIGN_DOMAIN, Vote,
     VoteChoice,

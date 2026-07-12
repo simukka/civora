@@ -8,6 +8,8 @@
 //!                                  one machine need distinct identities)
 //! civora-client --ledger-file PATH accepted-proposal ledger override (two
 //!                                  instances need distinct ledgers, like keys)
+//! civora-client --store-dir PATH   content-addressed blob store override (two
+//!                                  instances need distinct stores, like keys)
 //! ```
 
 use std::path::PathBuf;
@@ -27,6 +29,7 @@ pub struct CliArgs {
     pub net: NetMode,
     pub key_file: Option<PathBuf>,
     pub ledger_file: Option<PathBuf>,
+    pub store_dir: Option<PathBuf>,
 }
 
 pub fn parse() -> Result<CliArgs, String> {
@@ -60,6 +63,12 @@ pub fn parse() -> Result<CliArgs, String> {
                     .next()
                     .ok_or_else(|| "--ledger-file needs a path".to_owned())?;
                 cli.ledger_file = Some(PathBuf::from(path));
+            }
+            "--store-dir" => {
+                let path = args
+                    .next()
+                    .ok_or_else(|| "--store-dir needs a path".to_owned())?;
+                cli.store_dir = Some(PathBuf::from(path));
             }
             other => return Err(format!("unknown argument {other:?} (see --host/--join)")),
         }

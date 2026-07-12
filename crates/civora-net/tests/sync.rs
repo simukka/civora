@@ -11,8 +11,8 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use civora_governance::{
-    Cid, Ledger, LedgerEntry, Proposal, ProposalId, ProposalKind, RollbackPlan, SignedCertificate,
-    SignedProposal, SignedVote, Vote, VoteChoice,
+    BlobStore, Cid, Ledger, LedgerEntry, Proposal, ProposalId, ProposalKind, RollbackPlan,
+    SignedCertificate, SignedProposal, SignedVote, Vote, VoteChoice,
 };
 use civora_identity::{ActionLog, Identity, PlayerId, VerifyError};
 use civora_net::wire::{CellRef, snapshot_chunks};
@@ -60,6 +60,10 @@ struct TestNode {
     /// Open proposals and their ballots the client would serve on a join.
     open_proposals: Vec<SignedProposal>,
     open_votes: Vec<SignedVote>,
+    /// Content-addressed blob store, mirroring the client's `ContentStore`.
+    store: BlobStore,
+    /// Kept alive so the store's directory outlives the node.
+    _store_dir: tempfile::TempDir,
 }
 
 impl TestNode {
@@ -71,6 +75,8 @@ impl TestNode {
             cell: CellRef::genesis(),
             enable_mdns: false,
         });
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::open(store_dir.path().join("blobs")).unwrap();
         Self {
             net,
             identity,
@@ -80,11 +86,23 @@ impl TestNode {
             ledger: Ledger::default(),
             open_proposals: Vec::new(),
             open_votes: Vec::new(),
+            store,
+            _store_dir: store_dir,
         }
     }
 
     fn player_id(&self) -> PlayerId {
         self.identity.player_id()
+    }
+
+    /// The client's serve path for an inbound blob request: look the cid up in
+    /// the local store (missing → not-found) and answer.
+    fn serve_blob(&self, request_id: u64, cid: Cid) {
+        let bytes = self.store.get(&cid).ok().flatten();
+        self.net
+            .commands
+            .send(NetCommand::ProvideBlob { request_id, bytes })
+            .unwrap();
     }
 
     /// The kernel-gate path a client runs per local action: sign, append,
@@ -613,4 +631,177 @@ fn join_syncs_governance_state() {
     assert!(proposals.contains_key(&open_id), "open proposal synced");
     assert_eq!(votes.len(), 1);
     assert_eq!(votes[0].vote.proposal_id, open_id, "open ballot synced");
+}
+
+/// Bring up a connected, synced host + joiner over a flat world. Returns them
+/// ready for blob fetch (the connection, not gossip, is what fetch needs).
+fn connected_pair() -> (TestNode, TestNode) {
+    let mut host = TestNode::start(1, SessionMode::Host);
+    host.world = VoxelWorld::flat(1);
+    let host_addr = wait_for(&host.net.events, "host listen addr", |event| match event {
+        NetEvent::ListeningOn { addr } if addr.contains("127.0.0.1") => Some(addr),
+        _ => None,
+    });
+    let mut joiner = TestNode::start(
+        2,
+        SessionMode::Join {
+            dial: Some(host_addr),
+        },
+    );
+    connect_and_sync(&mut host, &mut joiner);
+    (host, joiner)
+}
+
+#[test]
+fn blob_fetch_round_trips() {
+    let (host, joiner) = connected_pair();
+
+    // The host holds a ~100 KiB blob; the joiner fetches it by cid.
+    let blob = vec![0xABu8; 100 * 1024];
+    let cid = host.store.put(&blob).unwrap();
+    joiner
+        .net
+        .commands
+        .send(NetCommand::FetchBlob { cid })
+        .unwrap();
+
+    // The host answers the request from its store.
+    let request_id = wait_for(&host.net.events, "blob request", |event| match event {
+        NetEvent::BlobRequested { request_id, cid: c } if c == cid => Some(request_id),
+        _ => None,
+    });
+    host.serve_blob(request_id, cid);
+
+    // The joiner receives verified bytes that hash to the cid.
+    let bytes = wait_for(&joiner.net.events, "blob fetched", |event| match event {
+        NetEvent::BlobFetched { cid: c, bytes } if c == cid => Some(bytes),
+        NetEvent::BlobFetchFailed { reason, .. } => panic!("fetch failed: {reason}"),
+        _ => None,
+    });
+    assert_eq!(bytes, blob);
+    assert_eq!(Cid::of(&bytes), cid);
+    assert_eq!(joiner.store.put(&bytes).unwrap(), cid);
+    assert!(joiner.store.has(&cid));
+}
+
+#[test]
+fn blob_fetch_not_found_fails_cleanly() {
+    let (host, joiner) = connected_pair();
+
+    // A cid no peer holds.
+    let cid = Cid::of(b"a blob nobody stored");
+    joiner
+        .net
+        .commands
+        .send(NetCommand::FetchBlob { cid })
+        .unwrap();
+    let request_id = wait_for(&host.net.events, "blob request", |event| match event {
+        NetEvent::BlobRequested { request_id, cid: c } if c == cid => Some(request_id),
+        _ => None,
+    });
+    host.serve_blob(request_id, cid); // store.get -> None -> NotFound
+
+    let reason = wait_for(&joiner.net.events, "fetch failure", |event| match event {
+        NetEvent::BlobFetchFailed { cid: c, reason } if c == cid => Some(reason),
+        NetEvent::BlobFetched { .. } => panic!("must not fetch a blob nobody has"),
+        _ => None,
+    });
+    assert!(reason.contains("not found"), "reason was {reason:?}");
+}
+
+#[test]
+fn blob_fetch_rejects_hash_mismatch() {
+    let (host, joiner) = connected_pair();
+
+    // The joiner asks for a specific cid; the host answers unrelated bytes.
+    let real = b"the bytes the joiner actually wants".to_vec();
+    let cid = Cid::of(&real);
+    joiner
+        .net
+        .commands
+        .send(NetCommand::FetchBlob { cid })
+        .unwrap();
+    let request_id = wait_for(&host.net.events, "blob request", |event| match event {
+        NetEvent::BlobRequested { request_id, cid: c } if c == cid => Some(request_id),
+        _ => None,
+    });
+    host.net
+        .commands
+        .send(NetCommand::ProvideBlob {
+            request_id,
+            bytes: Some(b"wrong bytes that do not hash to the cid".to_vec()),
+        })
+        .unwrap();
+
+    let reason = wait_for(&joiner.net.events, "fetch failure", |event| match event {
+        NetEvent::BlobFetchFailed { cid: c, reason } if c == cid => Some(reason),
+        NetEvent::BlobFetched { .. } => panic!("must not accept mismatched bytes"),
+        _ => None,
+    });
+    assert!(reason.contains("hash mismatch"), "reason was {reason:?}");
+}
+
+#[test]
+fn fetch_retries_across_peers() {
+    // A (fetcher) is the host; B and C dial in as servers. Only C holds the
+    // blob, so A must retry the other peer when the first answers not-found.
+    let mut a = TestNode::start(1, SessionMode::Host);
+    a.world = VoxelWorld::flat(1);
+    let a_addr = wait_for(&a.net.events, "A listen addr", |event| match event {
+        NetEvent::ListeningOn { addr } if addr.contains("127.0.0.1") => Some(addr),
+        _ => None,
+    });
+    let b = TestNode::start(
+        2,
+        SessionMode::Join {
+            dial: Some(a_addr.clone()),
+        },
+    );
+    let c = TestNode::start(3, SessionMode::Join { dial: Some(a_addr) });
+
+    // A serves a snapshot to each joiner so both connect and go live.
+    for label in ["snapshot 1", "snapshot 2"] {
+        let request_id = wait_for(&a.net.events, label, |event| match event {
+            NetEvent::SnapshotRequested { request_id } => Some(request_id),
+            _ => None,
+        });
+        a.serve_snapshot(request_id);
+    }
+    for (node, label) in [(&b, "B sync"), (&c, "C sync")] {
+        wait_for(&node.net.events, label, |event| match event {
+            NetEvent::WorldSync { .. } => Some(()),
+            NetEvent::JoinFailed { reason } => panic!("join failed: {reason}"),
+            _ => None,
+        });
+    }
+
+    // Only C stores the blob.
+    let blob = vec![0xCCu8; 50 * 1024];
+    let cid = c.store.put(&blob).unwrap();
+    a.net.commands.send(NetCommand::FetchBlob { cid }).unwrap();
+
+    // Answer every blob request on B and C (B has nothing → not-found, C
+    // serves), and drive A's events until the fetch resolves. Order-agnostic.
+    let deadline = std::time::Instant::now() + EVENT_TIMEOUT;
+    let fetched = loop {
+        if std::time::Instant::now() >= deadline {
+            panic!("A never fetched the blob");
+        }
+        for server in [&b, &c] {
+            if let Ok(NetEvent::BlobRequested {
+                request_id,
+                cid: c2,
+            }) = server.net.events.try_recv()
+            {
+                server.serve_blob(request_id, c2);
+            }
+        }
+        match a.net.events.try_recv() {
+            Ok(NetEvent::BlobFetched { cid: fc, bytes }) => break (fc, bytes),
+            Ok(NetEvent::BlobFetchFailed { reason, .. }) => panic!("fetch failed: {reason}"),
+            _ => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    assert_eq!(fetched.0, cid);
+    assert_eq!(fetched.1, blob);
 }

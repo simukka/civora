@@ -18,6 +18,7 @@ use civora_sim::{ChunkPos, tick};
 
 use crate::identity::{LocalIdentity, SessionLog};
 use crate::ledger::{EpochClock, LedgerStore, apply_certificate};
+use crate::packs::{ContentStore, PackTracker, track_pack};
 use crate::player::Player;
 use crate::sim_bridge::{DirtyChunks, SimWorld, drain_action_queue};
 use crate::voting::{ProposalStatus, ProposalStore};
@@ -168,6 +169,8 @@ fn pump_net_events(
     mut dirty: ResMut<DirtyChunks>,
     mut store: ResMut<ProposalStore>,
     mut ledger: ResMut<LedgerStore>,
+    mut tracker: ResMut<PackTracker>,
+    content: Res<ContentStore>,
     clock: Res<EpochClock>,
     mut player: Single<(&mut Transform, &mut Player)>,
 ) {
@@ -233,8 +236,10 @@ fn pump_net_events(
                     Ok(true) => {
                         info!("proposal {} received", id.short());
                         // A certificate may have arrived before its proposal.
-                        if let Some(cert) = store.take_pending_certificate(&id) {
-                            apply_certificate(&mut store, &mut ledger, cert);
+                        if let Some(cert) = store.take_pending_certificate(&id)
+                            && let Some(proposal) = apply_certificate(&mut store, &mut ledger, cert)
+                        {
+                            track_pack(&mut tracker, &content.0, Some(&*channels), id, &proposal);
                         }
                     }
                     // Gossip redelivery is normal; forged manifests die here.
@@ -248,7 +253,44 @@ fn pump_net_events(
                 }
             }
             NetEvent::RemoteCertificate(signed) => {
-                apply_certificate(&mut store, &mut ledger, *signed);
+                if let Some(proposal) = apply_certificate(&mut store, &mut ledger, *signed) {
+                    track_pack(
+                        &mut tracker,
+                        &content.0,
+                        Some(&*channels),
+                        proposal.id(),
+                        &proposal,
+                    );
+                }
+            }
+            NetEvent::BlobRequested { request_id, cid } => {
+                // Serve from our store; a corrupt/unreadable blob answers
+                // not-found rather than poisoning the requester.
+                let bytes = match content.0.get(&cid) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        warn!("serving blob {}: {err}", cid.short());
+                        None
+                    }
+                };
+                let _ = channels
+                    .commands
+                    .send(NetCommand::ProvideBlob { request_id, bytes });
+            }
+            NetEvent::BlobFetched { cid, bytes } => {
+                // Bytes already hash to cid (checked in the net layer); store and
+                // clear it from every pack that wanted it.
+                match content.0.put(&bytes) {
+                    Ok(_) => {
+                        tracker.on_fetched(&cid);
+                        info!("fetched blob {} ({} bytes)", cid.short(), bytes.len());
+                    }
+                    Err(err) => warn!("storing fetched blob {}: {err}", cid.short()),
+                }
+            }
+            NetEvent::BlobFetchFailed { cid, reason } => {
+                tracker.on_failed(&cid, &reason);
+                debug!("blob {} fetch failed: {reason}", cid.short());
             }
             NetEvent::RemoteBeacon { from, beacon } => {
                 check_beacon(&channels, &mut status, &world, &log, &local, from, &beacon);
@@ -262,6 +304,9 @@ fn pump_net_events(
                 status.last_error = Some(reason);
                 status.phase = NetPhase::Offline;
                 roster.0.clear();
+                // In-flight fetches can never complete now; the retry timer
+                // re-requests once a session returns.
+                tracker.clear_in_flight();
             }
         }
     }

@@ -6,7 +6,7 @@ use libp2p::swarm::NetworkBehaviour;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{gossipsub, mdns, request_response};
 
-use crate::codec::{SYNC_PROTOCOL, SyncCodec};
+use crate::codec::{FETCH_PROTOCOL, FetchCodec, SYNC_PROTOCOL, SyncCodec};
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
@@ -15,14 +15,18 @@ pub struct Behaviour {
     /// multicast).
     pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub sync: request_response::Behaviour<SyncCodec>,
+    /// Content-addressed blob fetch (`/civora/fetch/1`); a separate behaviour
+    /// so its request ids never collide with sync's.
+    pub fetch: request_response::Behaviour<FetchCodec>,
 }
 
 /// Gossipsub message size cap. The default (64 KiB) is plenty for actions
 /// and beacons but below the worst-case encoded [`civora_governance::MAX_PROPOSAL_BYTES`]
 /// proposal (192 KiB) and worst-case [`civora_governance::MAX_CERTIFICATE_BYTES`]
 /// certificate (~132 KiB), so both full manifests and full-roster certificates
-/// fit with framing to spare. Announcement + content-addressed fetch replaces
-/// whole-manifest gossip in the patch-pack milestone.
+/// fit with framing to spare. Manifests keep gossiping whole; the artifacts they
+/// reference travel separately over `/civora/fetch/1` after acceptance.
+/// Announce-then-fetch of the manifests themselves is deferred (not delivered).
 const MAX_GOSSIP_BYTES: usize = 256 * 1024;
 
 impl Behaviour {
@@ -53,10 +57,17 @@ impl Behaviour {
             request_response::Config::default(),
         );
 
+        let fetch = request_response::Behaviour::with_codec(
+            FetchCodec,
+            [(FETCH_PROTOCOL, request_response::ProtocolSupport::Full)],
+            request_response::Config::default(),
+        );
+
         Ok(Self {
             gossipsub,
             mdns,
             sync,
+            fetch,
         })
     }
 }
